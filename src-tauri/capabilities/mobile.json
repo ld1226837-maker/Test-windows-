@@ -1,0 +1,33 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Capabilities for the Android (and iOS, if ever built) shell. Scoped to the app's own private storage instead of $DOCUMENT, since Android's scoped-storage rules mean a bare $DOCUMENT/TurfApp/** scope (used in default.json for desktop) does not behave the same way here. 'platforms' is now set to ['android'] — Tauri's own docs (Capabilities for Different Windows and Platforms) confirm the enum is lowercase ('linux', 'windows', 'macos', 'android', 'ios'), which was the uncertainty blocking this before (see docs/android-port-notes.md). Re-verify this scopes correctly once `tauri android init` has actually been run and `gen/schemas/mobile-schema.json` exists to check against.",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+
+    "dialog:default",
+
+    "fs:default",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-write-file",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "$APPDATA/TurfApp/**" }, { "path": "$APPLOCALDATA/TurfApp/**" }]
+    },
+
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://wa.me/**" },
+        { "url": "upi://**" }
+      ]
+    },
+
+    "android-save:default"
+  ]
+}

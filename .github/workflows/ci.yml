@@ -1,0 +1,230 @@
+name: Windows CI and Release
+
+# Every push to main and every pull request runs the full quality gate.
+# Publishing a GitHub Release happens ONLY when every job below succeeded AND
+#   - a tag like v0.1.0 is pushed (must equal "version" in src-tauri/tauri.conf.json), or
+#   - the workflow is started manually with "publish" ticked.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub Release if every check passes"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  NODE_VERSION: "22"
+  FORCE_COLOR: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Frontend gate: typecheck, lint, unit tests, seeder/load-test checks, build
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match tauri.conf.json version $VERSION"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (exact lockfile)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (app + scripts)
+        run: npm run typecheck:all
+
+      - name: Lint (ESLint + Prettier)
+        run: npm run lint
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: Math, section and seeder checks
+        run: |
+          npm run verify:math
+          npm run verify:sections
+
+      - name: Load tests (light + medium)
+        run: |
+          npm run verify:loadtest:light
+          npm run verify:loadtest:medium
+
+      - name: Production web build
+        run: npm run build
+
+      - name: Build output must exist
+        run: test -s .output/public/index.html
+
+  # ---------------------------------------------------------------------------
+  # 2. Rust gate: the Tauri shell and the android-save plugin
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust check and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system libraries for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libdbus-1-dev libsecret-1-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri-build needs the frontendDist folder to exist; the real build is
+      # verified in the quality job, so a placeholder is enough here.
+      - name: Placeholder frontend for tauri-build
+        run: |
+          mkdir -p .output/public
+          echo '<!doctype html><title>ci</title>' > .output/public/index.html
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      # Advisory only: reported in the log but not a gate. Remove
+      # "continue-on-error" once the Rust code is clean under both.
+      - name: cargo fmt (advisory)
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (advisory)
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo clippy --all-targets
+
+  # ---------------------------------------------------------------------------
+  # 3. Build the Windows installer (only after both gates pass)
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build Windows installer
+    needs: [quality, rust]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies (exact lockfile)
+        run: npm ci --no-audit --no-fund
+
+      # tauri.conf.json: targets ["nsis"], beforeBuildCommand "npm run build".
+      - name: Build NSIS installer
+        run: npx tauri build
+
+      - name: Collect installer and checksums
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          mkdir -p dist
+          EXE=$(find src-tauri/target/release/bundle/nsis -name '*-setup.exe' | head -n1)
+          test -n "$EXE"
+          cp "$EXE" "dist/truff-windows-v${VERSION}-setup.exe"
+          cd dist
+          ls -l
+          sha256sum *.exe > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # 4. Publish (runs only if EVERYTHING above succeeded)
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: [quality, rust, build-windows]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist
+
+      - name: Release name and type
+        id: rel
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${GITHUB_REF_TYPE}" != "tag" ] || [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "pre=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pre=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Truff Snacks Windows ${{ steps.rel.outputs.tag }}
+          prerelease: ${{ steps.rel.outputs.pre == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
