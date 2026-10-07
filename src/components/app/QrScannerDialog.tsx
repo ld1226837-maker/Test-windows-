@@ -1,25 +1,56 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Camera, Clipboard, Image as ImageIcon, RefreshCw, Zap } from "lucide-react";
+import {
+  Camera,
+  Clipboard,
+  Image as ImageIcon,
+  RefreshCw,
+  Zap,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { beginOp } from "@/lib/backup-log";
 import { ensureCameraPermission } from "@/lib/camera-permission";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 // Scan failures are logged by stable code only: never the scanned text.
 const logScanFailure = (summary: string, errorCode: string) => {
-  try { beginOp("telegram-config", summary).finish("error", summary, { errorCode }); } catch { /* observer */ }
+  try {
+    beginOp("telegram-config", summary).finish("error", summary, { errorCode });
+  } catch {
+    /* observer */
+  }
 };
 
-type Props = { open: boolean; onOpenChange: (open: boolean) => void; onResult: (text: string) => void; title?: string; hint?: string };
+type Props = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onResult: (text: string) => void;
+  title?: string;
+  hint?: string;
+};
 
-export function QrScannerDialog({ open, onOpenChange, onResult, title = "Scan QR code", hint = "Point the rear camera at a QR code." }: Props) {
+export function QrScannerDialog({
+  open,
+  onOpenChange,
+  onResult,
+  title = "Scan QR code",
+  hint = "Point the rear camera at a QR code.",
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const onResultRef = useRef(onResult);
   const onOpenChangeRef = useRef(onOpenChange);
-  useEffect(() => { onResultRef.current = onResult; onOpenChangeRef.current = onOpenChange; }, [onResult, onOpenChange]);
+  useEffect(() => {
+    onResultRef.current = onResult;
+    onOpenChangeRef.current = onOpenChange;
+  }, [onResult, onOpenChange]);
   const fileRef = useRef<HTMLInputElement>(null);
   // Every start of the camera takes a ticket. stop() (and the effect cleanup)
   // bumps it, so any start still awaiting the permission prompt or
@@ -55,35 +86,54 @@ export function QrScannerDialog({ open, onOpenChange, onResult, title = "Scan QR
     void (async () => {
       try {
         if (!window.isSecureContext) throw new Error("insecure");
-        if (!(await ensureCameraPermission())) throw new DOMException("denied", "NotAllowedError");
+        if (!(await ensureCameraPermission()))
+          throw new DOMException("denied", "NotAllowedError");
         if (!current()) return;
         const jsQR = (await import("jsqr")).default;
         // Preferred constraints first; if the device rejects them (stale
         // deviceId, no rear camera) fall back to "any camera" instead of
         // dead-ending on OverconstrainedError.
         const candidates: MediaStreamConstraints[] = [
-          { video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }, audio: false },
+          {
+            video: deviceId
+              ? { deviceId: { exact: deviceId } }
+              : { facingMode: { ideal: "environment" } },
+            audio: false,
+          },
           { video: true, audio: false },
         ];
         let stream: MediaStream | null = null;
         for (const [index, constraints] of candidates.entries()) {
-          try { stream = await navigator.mediaDevices.getUserMedia(constraints); break; }
-          catch (e) {
-            const retryable = e instanceof DOMException && (e.name === "OverconstrainedError" || e.name === "NotFoundError");
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            break;
+          } catch (e) {
+            const retryable =
+              e instanceof DOMException &&
+              (e.name === "OverconstrainedError" || e.name === "NotFoundError");
             if (!retryable || index === candidates.length - 1) throw e;
           }
         }
         if (!stream) throw new DOMException("no stream", "NotFoundError");
-        if (!current()) { stream.getTracks().forEach((track) => track.stop()); return; }
+        if (!current()) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
-        const capabilities = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
+        const capabilities = track?.getCapabilities?.() as
+          (MediaTrackCapabilities & { torch?: boolean }) | undefined;
         setTorchAvailable(Boolean(capabilities?.torch));
-        const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+        const cams = (await navigator.mediaDevices.enumerateDevices()).filter(
+          (d) => d.kind === "videoinput",
+        );
         if (!current()) return;
         setDevices(cams);
         const video = videoRef.current;
-        if (!video) { stop(); return; }
+        if (!video) {
+          stop();
+          return;
+        }
         video.srcObject = stream;
         await video.play();
         if (!current()) return;
@@ -115,7 +165,18 @@ export function QrScannerDialog({ open, onOpenChange, onResult, title = "Scan QR
         streamRef.current?.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         const name = e instanceof DOMException ? e.name : "";
-        const code = name === "NotAllowedError" ? "camera-denied" : name === "NotFoundError" ? "camera-not-found" : name === "NotReadableError" ? "camera-busy" : name === "OverconstrainedError" ? "camera-constraints" : e instanceof Error && e.message === "insecure" ? "camera-insecure" : "unknown";
+        const code =
+          name === "NotAllowedError"
+            ? "camera-denied"
+            : name === "NotFoundError"
+              ? "camera-not-found"
+              : name === "NotReadableError"
+                ? "camera-busy"
+                : name === "OverconstrainedError"
+                  ? "camera-constraints"
+                  : e instanceof Error && e.message === "insecure"
+                    ? "camera-insecure"
+                    : "unknown";
         logScanFailure("Camera scanner could not start", code);
         setError(
           name === "NotAllowedError"
@@ -136,25 +197,34 @@ export function QrScannerDialog({ open, onOpenChange, onResult, title = "Scan QR
     })();
     return () => stop();
     // The camera is controlled only by open / device selection / explicit retry. Parent callback identity and torch changes must not restart it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, deviceId, attempt]);
 
   useEffect(() => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || !torchAvailable) return;
-    void track.applyConstraints({ advanced: [{ torch }] } as MediaTrackConstraints).catch(() => setTorch(false));
+    // `torch` is a real but non-standard constraint, so it is missing from lib.dom's MediaTrackConstraintSet.
+    void track
+      .applyConstraints({
+        advanced: [{ torch }],
+      } as unknown as MediaTrackConstraints)
+      .catch(() => setTorch(false));
   }, [torch, torchAvailable]);
 
   const chooseDevice = () => {
     if (devices.length < 2) return;
-    const activeId = deviceId || streamRef.current?.getVideoTracks()[0]?.getSettings().deviceId || "";
+    const activeId =
+      deviceId ||
+      streamRef.current?.getVideoTracks()[0]?.getSettings().deviceId ||
+      "";
     const index = devices.findIndex((d) => d.deviceId === activeId);
     const nextIndex = index >= 0 ? (index + 1) % devices.length : 1;
     setDeviceId(devices[nextIndex]?.deviceId ?? devices[0]?.deviceId ?? "");
   };
 
   const scanImage = async (e: ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; e.target.value = ""; if (!f) return;
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
     let img: ImageBitmap | null = null;
     try {
       const jsQR = (await import("jsqr")).default;
@@ -169,35 +239,150 @@ export function QrScannerDialog({ open, onOpenChange, onResult, title = "Scan QR
       const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const r = jsQR(d.data, d.width, d.height);
       if (!r) throw new Error("no-qr");
-      onResultRef.current(r.data); stop(); onOpenChangeRef.current(false);
-    } catch { logScanFailure("No QR code found in chosen image", "no-qr"); toast.error("No QR code was found in that image."); } finally { img?.close(); }
+      onResultRef.current(r.data);
+      stop();
+      onOpenChangeRef.current(false);
+    } catch {
+      logScanFailure("No QR code found in chosen image", "no-qr");
+      toast.error("No QR code was found in that image.");
+    } finally {
+      img?.close();
+    }
   };
 
   const paste = async () => {
-    try { const text = await navigator.clipboard.readText(); if (!text.trim()) throw new Error(); onResultRef.current(text); stop(); onOpenChangeRef.current(false); }
-    catch { logScanFailure("Clipboard was empty or unavailable", "clipboard-unavailable"); toast.error("Clipboard is empty or unavailable."); }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) throw new Error();
+      onResultRef.current(text);
+      stop();
+      onOpenChangeRef.current(false);
+    } catch {
+      logScanFailure(
+        "Clipboard was empty or unavailable",
+        "clipboard-unavailable",
+      );
+      toast.error("Clipboard is empty or unavailable.");
+    }
   };
 
-  return <Dialog open={open} onOpenChange={(v) => { if (!v) stop(); onOpenChange(v); }}>
-    <DialogContent>
-      <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{hint}</DialogDescription></DialogHeader>
-      <div className="space-y-3">
-        {error ? <div className="rounded-xl border p-3 text-sm text-muted-foreground">{error}</div> : <div className="relative overflow-hidden rounded-xl bg-black"><video ref={videoRef} playsInline muted className="aspect-square w-full object-cover"/><div className="pointer-events-none absolute inset-[18%] rounded-2xl border-2 border-white/80"/>{startingCamera && <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-medium text-white">Camera starting…</div>}</div>}
-        {manual && <div className="space-y-2 rounded-xl border p-3">
-          <label className="text-sm font-medium" htmlFor="qr-manual-value">Telegram details</label>
-          <Input id="qr-manual-value" value={manualText} onChange={(e) => setManualText(e.target.value)} placeholder="Paste a bot token, chat ID, or pairing text" autoCapitalize="none" autoCorrect="off" />
-          <Button disabled={!manualText.trim()} onClick={() => { onResultRef.current(manualText.trim()); setManual(false); setManualText(""); onOpenChangeRef.current(false); }}>Use entered details</Button>
-        </div>}
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => fileRef.current?.click()}><ImageIcon className="mr-1 h-4 w-4"/>Choose image</Button>
-          <Button variant="outline" onClick={paste}><Clipboard className="mr-1 h-4 w-4"/>Paste</Button>
-          {devices.length > 1 && <Button variant="outline" onClick={chooseDevice}><RefreshCw className="mr-1 h-4 w-4"/>Switch camera</Button>}
-          {torchAvailable && <Button variant={torch ? "default" : "outline"} onClick={() => setTorch((v) => !v)}><Zap className="mr-1 h-4 w-4"/>Torch</Button>}
-          {error && <Button variant="outline" onClick={() => { stop(); setDeviceId(""); setError(null); setAttempt((n) => n + 1); }}>Retry camera</Button>}
-          <Button variant="outline" onClick={() => { stop(); setManual(true); }}><Camera className="mr-1 h-4 w-4"/>Enter manually</Button>
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (!v) stop();
+        onOpenChange(v);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{hint}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {error ? (
+            <div className="rounded-xl border p-3 text-sm text-muted-foreground">
+              {error}
+            </div>
+          ) : (
+            <div className="relative overflow-hidden rounded-xl bg-black">
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                className="aspect-square w-full object-cover"
+              />
+              <div className="pointer-events-none absolute inset-[18%] rounded-2xl border-2 border-white/80" />
+              {startingCamera && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-medium text-white">
+                  Camera starting…
+                </div>
+              )}
+            </div>
+          )}
+          {manual && (
+            <div className="space-y-2 rounded-xl border p-3">
+              <label className="text-sm font-medium" htmlFor="qr-manual-value">
+                Telegram details
+              </label>
+              <Input
+                id="qr-manual-value"
+                value={manualText}
+                onChange={(e) => setManualText(e.target.value)}
+                placeholder="Paste a bot token, chat ID, or pairing text"
+                autoCapitalize="none"
+                autoCorrect="off"
+              />
+              <Button
+                disabled={!manualText.trim()}
+                onClick={() => {
+                  onResultRef.current(manualText.trim());
+                  setManual(false);
+                  setManualText("");
+                  onOpenChangeRef.current(false);
+                }}
+              >
+                Use entered details
+              </Button>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => fileRef.current?.click()}>
+              <ImageIcon className="mr-1 h-4 w-4" />
+              Choose image
+            </Button>
+            <Button variant="outline" onClick={paste}>
+              <Clipboard className="mr-1 h-4 w-4" />
+              Paste
+            </Button>
+            {devices.length > 1 && (
+              <Button variant="outline" onClick={chooseDevice}>
+                <RefreshCw className="mr-1 h-4 w-4" />
+                Switch camera
+              </Button>
+            )}
+            {torchAvailable && (
+              <Button
+                variant={torch ? "default" : "outline"}
+                onClick={() => setTorch((v) => !v)}
+              >
+                <Zap className="mr-1 h-4 w-4" />
+                Torch
+              </Button>
+            )}
+            {error && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  stop();
+                  setDeviceId("");
+                  setError(null);
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                Retry camera
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => {
+                stop();
+                setManual(true);
+              }}
+            >
+              <Camera className="mr-1 h-4 w-4" />
+              Enter manually
+            </Button>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={scanImage}
+          />
         </div>
-        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={scanImage}/>
-      </div>
-    </DialogContent>
-  </Dialog>;
+      </DialogContent>
+    </Dialog>
+  );
 }

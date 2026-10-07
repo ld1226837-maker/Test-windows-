@@ -260,7 +260,12 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
   "settings.telegram": [
     p("settings.telegram.status", "Backup status", "summary", true),
     p("settings.telegram.connection", "Telegram connection", "panel", true),
-    p("settings.telegram.actions", "Backup and restore actions", "action", true),
+    p(
+      "settings.telegram.actions",
+      "Backup and restore actions",
+      "action",
+      true,
+    ),
     p("settings.telegram.progress", "Operation progress", "panel"),
   ],
   "settings.backup": [

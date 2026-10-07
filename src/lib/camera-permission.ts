@@ -13,7 +13,9 @@ export async function ensureCameraPermission(): Promise<boolean> {
   if (!isAndroid()) return true;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const result = await invoke<{ granted?: boolean }>("plugin:android-save|request_camera_permission");
+    const result = await invoke<{ granted?: boolean }>(
+      "plugin:android-save|request_camera_permission",
+    );
     return result?.granted !== false;
   } catch {
     return true;

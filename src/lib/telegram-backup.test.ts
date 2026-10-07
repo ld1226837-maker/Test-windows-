@@ -1091,15 +1091,31 @@ describe("uploadFullBackup()", () => {
       }),
     );
 
-    const progress: number[] = [];
+    const progress: Array<{
+      part: number;
+      total: number;
+      phase?: string | undefined;
+      bytesDone?: number | undefined;
+    }> = [];
     const result = await uploadFullBackup(cfg(), new Uint8Array(700), {
       session: "S",
       deviceLabel: "Windows",
-      onProgress: (p) => progress.push(p.part),
+      onProgress: (p) =>
+        progress.push({
+          part: p.part,
+          total: p.total,
+          phase: p.phase,
+          bytesDone: p.bytesDone,
+        }),
     });
 
     expect(result).toEqual({ session: "S", parts: 1, messageIds: [1] });
-    expect(progress).toEqual([1]);
+    // Each part reports twice: once as it starts (0 bytes) and once after
+    // Telegram accepts it (all bytes), which drives the byte-level progress bar.
+    expect(progress).toEqual([
+      { part: 1, total: 1, phase: "uploading", bytesDone: 0 },
+      { part: 1, total: 1, phase: "uploading", bytesDone: 700 },
+    ]);
     expect(calls[0]).toContain("/botbot-1/sendDocument");
     expect(calls[1]).toBe(`${BACKUP_NAME_PREFIX}-S.zip`);
   });

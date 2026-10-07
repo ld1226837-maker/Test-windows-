@@ -71,9 +71,13 @@ describe("runAutomaticBackupIfDue", () => {
   it("uploads and records the completion time on success", async () => {
     const { runAutomaticBackupIfDue } = await import("./automatic-backup");
     await expect(runAutomaticBackupIfDue()).resolves.toBe(true);
+    // The auto-backup op owns the log entry and status update, so the inner
+    // upload is told not to write a second log entry.
     expect(mocks.uploadShardedFullBackup).toHaveBeenCalledWith(
       expect.objectContaining({ botToken: "bot", chatId: "chat" }),
       "device",
+      undefined,
+      { log: false },
     );
     expect(mocks.writeAppSettings).toHaveBeenCalledWith(
       expect.objectContaining({ lastBackupAt: expect.any(String) }),
@@ -86,7 +90,9 @@ describe("runAutomaticBackupIfDue", () => {
     await expect(runAutomaticBackupIfDue()).rejects.toThrow("network");
     expect(mocks.writeAppSettings).toHaveBeenCalledWith(
       expect.objectContaining({
-        lastBackupError: "network",
+        // The stored status is the generic, redacted op summary; the real
+        // error is rethrown (and shown by the caller), not persisted raw.
+        lastBackupError: "Automatic backup failed",
         lastBackupErrorAt: expect.any(String),
       }),
     );

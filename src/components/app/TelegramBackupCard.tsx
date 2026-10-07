@@ -91,7 +91,13 @@ import { QrScannerDialog } from "./QrScannerDialog";
 import { LayoutPart } from "./LayoutSection";
 import { OperationProgressBar } from "./OperationProgressBar";
 import { beginOp, redact } from "@/lib/backup-log";
-import { beginProgress, setOperationProgress, setOperationResult, setOperationRetry, isOperationRunning } from "@/lib/operation-progress";
+import {
+  beginProgress,
+  setOperationProgress,
+  setOperationResult,
+  setOperationRetry,
+  isOperationRunning,
+} from "@/lib/operation-progress";
 
 const MAX_BOTS = 10;
 
@@ -101,7 +107,19 @@ const MAX_BOTS = 10;
  * same archive to the device when they'd rather not set anything up.
  */
 const progressLabel = (phase: string, done?: number, total?: number) => {
-  const labels: Record<string, string> = { preparing: "Preparing backup", reading: "Reading backup data", compressing: "Compressing backup", encrypting: "Encrypting backup", uploading: "Uploading backup", downloading: "Downloading backup", verifying: "Verifying backup", writing: "Saving backup", "restoring-records": "Restoring records", "restoring-photos": "Restoring receipt photos", finalizing: "Finalizing backup" };
+  const labels: Record<string, string> = {
+    preparing: "Preparing backup",
+    reading: "Reading backup data",
+    compressing: "Compressing backup",
+    encrypting: "Encrypting backup",
+    uploading: "Uploading backup",
+    downloading: "Downloading backup",
+    verifying: "Verifying backup",
+    writing: "Saving backup",
+    "restoring-records": "Restoring records",
+    "restoring-photos": "Restoring receipt photos",
+    finalizing: "Finalizing backup",
+  };
   const base = labels[phase] ?? "Processing backup";
   return done != null && total != null ? `${base} (${done}/${total})` : base;
 };
@@ -137,7 +155,8 @@ export function TelegramBackupCard() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
-  const [pendingScan, setPendingScan] = useState<Partial<TelegramConfig> | null>(null);
+  const [pendingScan, setPendingScan] =
+    useState<Partial<TelegramConfig> | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [messageLocator, setMessageLocator] = useState("");
 
@@ -158,17 +177,42 @@ export function TelegramBackupCard() {
   const configured = isTelegramConfigured(cfg);
 
   const run = async (label: string, fn: () => Promise<void>) => {
-    if (isOperationRunning()) { toast.error("Another backup is in progress"); return; }
+    if (isOperationRunning()) {
+      toast.error("Another backup is in progress");
+      return;
+    }
     setBusy(label);
     let succeeded = false;
     try {
       await fn();
       succeeded = true;
     } catch (e) {
-      setOperationResult(e instanceof DOMException && e.name === "AbortError" ? "cancelled" : "error", e instanceof DOMException && e.name === "AbortError" ? "Backup cancelled" : errorMessage(e));
-      if (!(e instanceof DOMException && e.name === "AbortError")) toast.error(redact(errorMessage(e)));
+      setOperationResult(
+        e instanceof DOMException && e.name === "AbortError"
+          ? "cancelled"
+          : "error",
+        e instanceof DOMException && e.name === "AbortError"
+          ? "Backup cancelled"
+          : errorMessage(e),
+      );
+      if (!(e instanceof DOMException && e.name === "AbortError"))
+        toast.error(redact(errorMessage(e)));
     } finally {
-      if (succeeded) setOperationResult("success", label === "backup" ? "Telegram backup completed" : label === "fetch" ? "Telegram restore completed" : label === "fetch-message" ? "Selected Telegram restore completed" : label === "local-save" ? "Local backup saved" : label === "scan-save" ? "Telegram details saved" : "Operation completed");
+      if (succeeded)
+        setOperationResult(
+          "success",
+          label === "backup"
+            ? "Telegram backup completed"
+            : label === "fetch"
+              ? "Telegram restore completed"
+              : label === "fetch-message"
+                ? "Selected Telegram restore completed"
+                : label === "local-save"
+                  ? "Local backup saved"
+                  : label === "scan-save"
+                    ? "Telegram details saved"
+                    : "Operation completed",
+        );
       setBusy(null);
       setProgress(null);
     }
@@ -247,21 +291,55 @@ export function TelegramBackupCard() {
     run("backup", async () => {
       const opId = crypto.randomUUID();
       const controller = new AbortController();
-      beginProgress("telegram-upload", opId, "preparing", "Preparing Telegram backup", true);
-      setOperationProgress({ opId, kind: "telegram-upload", phase: "preparing", label: "Preparing Telegram backup", cancellable: true, cancel: () => controller.abort() });
+      beginProgress(
+        "telegram-upload",
+        opId,
+        "preparing",
+        "Preparing Telegram backup",
+        true,
+      );
+      setOperationProgress({
+        opId,
+        kind: "telegram-upload",
+        phase: "preparing",
+        label: "Preparing Telegram backup",
+        cancellable: true,
+        cancel: () => controller.abort(),
+      });
       setProgress("Packing everything into one file…");
       const result = await uploadShardedFullBackup(
         cfg,
         cfg.deviceLabel || defaultDeviceLabel(),
         (p) => {
-          const retryLabel = p.retry ? ` · Telegram asked us to wait ${Math.ceil(p.retry.retryAfterMs / 1000)} s, retrying (attempt ${p.retry.attempt} of ${p.retry.max})` : "";
+          const retryLabel = p.retry
+            ? ` · Telegram asked us to wait ${Math.ceil(p.retry.retryAfterMs / 1000)} s, retrying (attempt ${p.retry.attempt} of ${p.retry.max})`
+            : "";
           const phase = p.phase ?? "uploading";
-          const label = phase === "encrypting"
-            ? `Encrypting backup${p.total ? ` · shard ${p.shard} of ${p.total}` : ""}`
-            : `Uploading part ${p.shard} of ${p.total}`;
+          const label =
+            phase === "encrypting"
+              ? `Encrypting backup${p.total ? ` · shard ${p.shard} of ${p.total}` : ""}`
+              : `Uploading part ${p.shard} of ${p.total}`;
           setProgress(label + retryLabel);
           // The bar shows the wait as a live countdown (retry.until), not a frozen label.
-          setOperationProgress({ opId, kind: "telegram-upload", phase, label, retry: p.retry ? { attempt: p.retry.attempt, max: p.retry.max, until: Date.now() + p.retry.retryAfterMs } : undefined, done: phase === "uploading" ? p.shard : undefined, total: phase === "uploading" ? p.total : undefined, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, cancellable: true, cancel: () => controller.abort() });
+          setOperationProgress({
+            opId,
+            kind: "telegram-upload",
+            phase,
+            label,
+            retry: p.retry
+              ? {
+                  attempt: p.retry.attempt,
+                  max: p.retry.max,
+                  until: Date.now() + p.retry.retryAfterMs,
+                }
+              : undefined,
+            done: phase === "uploading" ? p.shard : undefined,
+            total: phase === "uploading" ? p.total : undefined,
+            bytesDone: p.bytesDone,
+            bytesTotal: p.bytesTotal,
+            cancellable: true,
+            cancel: () => controller.abort(),
+          });
         },
         { signal: controller.signal },
       );
@@ -275,26 +353,57 @@ export function TelegramBackupCard() {
       } catch {
         /* clipboard permission is optional */
       }
-      toast.success("Backup sent to your Telegram chat", { description: `${result.shardCount} encrypted shard${result.shardCount === 1 ? "" : "s"} sent`, duration: 10000 });
+      toast.success("Backup sent to your Telegram chat", {
+        description: `${result.shardCount} encrypted shard${result.shardCount === 1 ? "" : "s"} sent`,
+        duration: 10000,
+      });
     });
 
   const restoreLatest = () =>
     run("fetch", async () => {
       const opId = crypto.randomUUID();
       const controller = new AbortController();
-      beginProgress("telegram-restore", opId, "preparing", "Finding latest Telegram backup", true, () => controller.abort());
+      beginProgress(
+        "telegram-restore",
+        opId,
+        "preparing",
+        "Finding latest Telegram backup",
+        true,
+        () => controller.abort(),
+      );
       setProgress("Looking for the latest sharded backup…");
-      const { top, shards } = await fetchLatestShardedFullBackup(cfg, { signal: controller.signal, onProgress: (p) => { if (p.retry) setOperationRetry(p.retry); } });
+      const { top, shards } = await fetchLatestShardedFullBackup(cfg, {
+        signal: controller.signal,
+        onProgress: (p) => {
+          if (p.retry) setOperationRetry(p.retry);
+        },
+      });
       setProgress("Restoring backup…");
       const result = await restoreFullBackupSharded(
         shards,
         merge ? "merge" : "replace",
         top,
-        { signal: controller.signal, onProgress: (p) => {
-          if (p.retry) { setOperationRetry(p.retry); return; }
-          const cancellable = p.phase === "downloading" || p.phase === "verifying";
-          setOperationProgress({ opId, kind: "telegram-restore", phase: p.phase, label: p.label ?? progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, cancellable, cancel: cancellable ? () => controller.abort() : undefined });
-        } },
+        {
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (p.retry) {
+              setOperationRetry(p.retry);
+              return;
+            }
+            const cancellable =
+              p.phase === "downloading" || p.phase === "verifying";
+            setOperationProgress({
+              opId,
+              kind: "telegram-restore",
+              phase: p.phase,
+              label: p.label ?? progressLabel(p.phase, p.done, p.total),
+              done: p.done,
+              total: p.total,
+              cancellable,
+              cancel: cancellable ? () => controller.abort() : undefined,
+            });
+          },
+        },
       );
       await invalidateAllDataQueries(qc);
       toast.success("Restored from Telegram", {
@@ -306,7 +415,14 @@ export function TelegramBackupCard() {
     run("fetch-message", async () => {
       const opId = crypto.randomUUID();
       const controller = new AbortController();
-      beginProgress("telegram-restore", opId, "preparing", "Opening selected Telegram backup", true, () => controller.abort());
+      beginProgress(
+        "telegram-restore",
+        opId,
+        "preparing",
+        "Opening selected Telegram backup",
+        true,
+        () => controller.abort(),
+      );
       if (!messageLocator.trim())
         throw new Error(
           "Enter a Telegram backup message ID or copied Telegram message link first.",
@@ -315,18 +431,39 @@ export function TelegramBackupCard() {
       const { top, shards } = await fetchShardedFullBackupByMessage(
         cfg,
         messageLocator,
-        { signal: controller.signal, onProgress: (p) => { if (p.retry) setOperationRetry(p.retry); } },
+        {
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (p.retry) setOperationRetry(p.retry);
+          },
+        },
       );
       setProgress("Restoring selected backup…");
       const result = await restoreFullBackupSharded(
         shards,
         merge ? "merge" : "replace",
         top,
-        { signal: controller.signal, onProgress: (p) => {
-          if (p.retry) { setOperationRetry(p.retry); return; }
-          const cancellable = p.phase === "downloading" || p.phase === "verifying";
-          setOperationProgress({ opId, kind: "telegram-restore", phase: p.phase, label: p.label ?? progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, cancellable, cancel: cancellable ? () => controller.abort() : undefined });
-        } },
+        {
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (p.retry) {
+              setOperationRetry(p.retry);
+              return;
+            }
+            const cancellable =
+              p.phase === "downloading" || p.phase === "verifying";
+            setOperationProgress({
+              opId,
+              kind: "telegram-restore",
+              phase: p.phase,
+              label: p.label ?? progressLabel(p.phase, p.done, p.total),
+              done: p.done,
+              total: p.total,
+              cancellable,
+              cancel: cancellable ? () => controller.abort() : undefined,
+            });
+          },
+        },
       );
       await invalidateAllDataQueries(qc);
       toast.success("Restored selected Telegram backup", {
@@ -337,12 +474,28 @@ export function TelegramBackupCard() {
   const saveLocalCopy = () =>
     run("local-save", async () => {
       const opId = crypto.randomUUID();
-      beginProgress("local-export", opId, "preparing", "Preparing local full backup");
+      beginProgress(
+        "local-export",
+        opId,
+        "preparing",
+        "Preparing local full backup",
+      );
       await assertLocalFullCopyWithinMemoryBudget();
       setProgress("Packing everything into one file…");
       const { bytes: plainBytes, missingFiles } = await buildFullBackup(
         cfg.deviceLabel || defaultDeviceLabel(),
-        (p) => setOperationProgress({ opId, kind: "local-export", phase: p.phase, label: progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, cancellable: false }),
+        (p) =>
+          setOperationProgress({
+            opId,
+            kind: "local-export",
+            phase: p.phase,
+            label: progressLabel(p.phase, p.done, p.total),
+            done: p.done,
+            total: p.total,
+            bytesDone: p.bytesDone,
+            bytesTotal: p.bytesTotal,
+            cancellable: false,
+          }),
       );
       if (missingFiles.length > 0)
         throw new Error(
@@ -350,8 +503,24 @@ export function TelegramBackupCard() {
         );
       setProgress("Encrypting the backup…");
       const bytes = await encryptFullBackupBytes(plainBytes);
-      const savedTo = await saveFullBackupLocally(bytes, fullBackupFileName(), (p) => setOperationProgress({ opId, kind: "local-export", phase: p.phase, label: progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, cancellable: false }));
-      if (savedTo === null) throw new DOMException("The backup save was cancelled", "AbortError");
+      const savedTo = await saveFullBackupLocally(
+        bytes,
+        fullBackupFileName(),
+        (p) =>
+          setOperationProgress({
+            opId,
+            kind: "local-export",
+            phase: p.phase,
+            label: progressLabel(p.phase, p.done, p.total),
+            done: p.done,
+            total: p.total,
+            bytesDone: p.bytesDone,
+            bytesTotal: p.bytesTotal,
+            cancellable: false,
+          }),
+      );
+      if (savedTo === null)
+        throw new DOMException("The backup save was cancelled", "AbortError");
       toast.success(isDesktop() ? "Backup saved" : "Backup file downloaded", {
         description:
           "Records and receipt photos are both inside this one file.",
@@ -365,6 +534,8 @@ export function TelegramBackupCard() {
     };
     window.addEventListener("truff-backup-retry", retry);
     return () => window.removeEventListener("truff-backup-retry", retry);
+    // Re-subscribe only when the saved config changes; backupNow is recreated every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg]);
 
   const showQr = () =>
@@ -386,12 +557,16 @@ export function TelegramBackupCard() {
       setPendingScan({
         ...(payload.botToken ? { botToken: payload.botToken } : {}),
         ...(payload.chatId ? { chatId: payload.chatId } : {}),
-        ...(payload.extraBotTokens ? { extraBotTokens: payload.extraBotTokens } : {}),
+        ...(payload.extraBotTokens
+          ? { extraBotTokens: payload.extraBotTokens }
+          : {}),
       });
       setScanOpen(false);
       op.finish("success", "Telegram QR details recognized");
     } catch (e) {
-      op.finish("error", "Telegram QR scan was not recognized", { errorCode: "unknown" });
+      op.finish("error", "Telegram QR scan was not recognized", {
+        errorCode: "unknown",
+      });
       toast.error(redact(errorMessage(e)));
     }
   };
@@ -399,12 +574,18 @@ export function TelegramBackupCard() {
   const confirmScan = () => {
     if (!pendingScan) return;
     void run("scan-save", async () => {
-      const next = { ...cfg, ...pendingScan, extraBotTokens: pendingScan.extraBotTokens ?? cfg.extraBotTokens };
+      const next = {
+        ...cfg,
+        ...pendingScan,
+        extraBotTokens: pendingScan.extraBotTokens ?? cfg.extraBotTokens,
+      };
       if (!next.chatId?.trim()) {
         setCfg(next);
         setPendingScan(null);
         setEditing(true);
-        toast.success("Bot details loaded. Add or detect the chat ID, then save.");
+        toast.success(
+          "Bot details loaded. Add or detect the chat ID, then save.",
+        );
         return;
       }
       const result = await validateTelegramConfig(next);
@@ -412,7 +593,11 @@ export function TelegramBackupCard() {
       setCfg(next);
       setPendingScan(null);
       setEditing(false);
-      toast.success(result.username ? `Telegram bot @${result.username} verified and saved` : "Telegram details verified and saved");
+      toast.success(
+        result.username
+          ? `Telegram bot @${result.username} verified and saved`
+          : "Telegram details verified and saved",
+      );
     });
   };
 
@@ -454,7 +639,15 @@ export function TelegramBackupCard() {
                       }
                       placeholder="123456:ABC-DEF..."
                     />
-                    <Button type="button" variant="outline" size="icon" aria-label="Scan bot token" onClick={() => setScanOpen(true)}><Camera className="h-4 w-4" /></Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      aria-label="Scan bot token"
+                      onClick={() => setScanOpen(true)}
+                    >
+                      <Camera className="h-4 w-4" />
+                    </Button>
                   </SettingsField>
                   <SettingsField
                     label="Chat ID"
@@ -467,8 +660,38 @@ export function TelegramBackupCard() {
                       }
                       placeholder="-1001234567890"
                     />
-                    <Button type="button" variant="outline" size="icon" aria-label="Scan chat ID" onClick={() => setScanOpen(true)}><Camera className="h-4 w-4" /></Button>
-                    <Button type="button" variant="outline" size="sm" disabled={!cfg.botToken || busy !== null} onClick={() => run("detect-chat", async () => { const chatId = await detectTelegramChatId(cfg); if (!chatId) { toast.error("No recent chat found. Message the bot first, then try again."); return; } saveCfg({ ...cfg, chatId }); toast.success(`Chat ID detected: …${chatId.slice(-4)}`); })}>Detect</Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      aria-label="Scan chat ID"
+                      onClick={() => setScanOpen(true)}
+                    >
+                      <Camera className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!cfg.botToken || busy !== null}
+                      onClick={() =>
+                        run("detect-chat", async () => {
+                          const chatId = await detectTelegramChatId(cfg);
+                          if (!chatId) {
+                            toast.error(
+                              "No recent chat found. Message the bot first, then try again.",
+                            );
+                            return;
+                          }
+                          saveCfg({ ...cfg, chatId });
+                          toast.success(
+                            `Chat ID detected: …${chatId.slice(-4)}`,
+                          );
+                        })
+                      }
+                    >
+                      Detect
+                    </Button>
                   </SettingsField>
                   <SettingsField label="Name for this device">
                     <Input
@@ -506,7 +729,15 @@ export function TelegramBackupCard() {
                           }}
                           placeholder="234567:GHI-JKL..."
                         />
-                        <Button type="button" variant="outline" size="icon" aria-label={`Scan bot ${i + 2} token`} onClick={() => setScanOpen(true)}><Camera className="h-4 w-4" /></Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          aria-label={`Scan bot ${i + 2} token`}
+                          onClick={() => setScanOpen(true)}
+                        >
+                          <Camera className="h-4 w-4" />
+                        </Button>
                         <Button
                           type="button"
                           variant="ghost"
@@ -664,7 +895,9 @@ export function TelegramBackupCard() {
             </>
           )}
 
-          <LayoutPart id="settings.telegram.progress"><OperationProgressBar /></LayoutPart>
+          <LayoutPart id="settings.telegram.progress">
+            <OperationProgressBar />
+          </LayoutPart>
           {progress && (
             <p className="text-xs text-muted-foreground">{progress}</p>
           )}
@@ -896,9 +1129,42 @@ export function TelegramBackupCard() {
         </DialogContent>
       </Dialog>
 
-      <QrScannerDialog open={scanOpen} onOpenChange={setScanOpen} onResult={onScanned} title="Scan Telegram details" hint="Scan the app setup QR, a Telegram bot-token QR, or a QR containing the chat ID." />
-      <AlertDialog open={pendingScan !== null} onOpenChange={(v) => { if (!v) setPendingScan(null); }}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Use scanned Telegram details?</AlertDialogTitle><AlertDialogDescription>Only the fields present in the scan will be filled. Review them before saving. Token: {pendingScan?.botToken ? `${pendingScan.botToken.slice(0, 6)}…:${pendingScan.botToken.slice(-3)}` : "unchanged"}. Chat ID: {pendingScan?.chatId ? `…${pendingScan.chatId.slice(-4)}` : "unchanged"}.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={confirmScan}>Use details</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+      <QrScannerDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onResult={onScanned}
+        title="Scan Telegram details"
+        hint="Scan the app setup QR, a Telegram bot-token QR, or a QR containing the chat ID."
+      />
+      <AlertDialog
+        open={pendingScan !== null}
+        onOpenChange={(v) => {
+          if (!v) setPendingScan(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use scanned Telegram details?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Only the fields present in the scan will be filled. Review them
+              before saving. Token:{" "}
+              {pendingScan?.botToken
+                ? `${pendingScan.botToken.slice(0, 6)}…:${pendingScan.botToken.slice(-3)}`
+                : "unchanged"}
+              . Chat ID:{" "}
+              {pendingScan?.chatId
+                ? `…${pendingScan.chatId.slice(-4)}`
+                : "unchanged"}
+              .
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmScan}>
+              Use details
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
       </AlertDialog>
       <RestorePassphrasePrompt
         open={passphrasePrompt !== null}
@@ -909,4 +1175,3 @@ export function TelegramBackupCard() {
     </section>
   );
 }
-

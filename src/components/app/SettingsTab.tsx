@@ -74,7 +74,12 @@ import { usePersistedState } from "@/lib/ui-prefs";
 import { SectionHeading } from "./SectionHeading";
 import { FirstRunChecklistCard } from "./FirstRunChecklistCard";
 import { SettingsSection } from "./SettingsSection";
-import { LayoutPart, LayoutParts, LayoutSection, LayoutSections } from "./LayoutSection";
+import {
+  LayoutPart,
+  LayoutParts,
+  LayoutSection,
+  LayoutSections,
+} from "./LayoutSection";
 import { LayoutSettingsCard } from "./LayoutSettingsCard";
 import { SortMenu } from "./SortMenu";
 import { BillsPrintingCard } from "./BillsPrintingCard";
@@ -1367,7 +1372,17 @@ export function SettingsTab() {
                   title="Backup & restore"
                   icon={DownloadIcon}
                 >
-                  <LayoutParts sectionId="settings.backup" className="space-y-4"><LayoutPart id="settings.backup.status"><BackupStatusCard /></LayoutPart><LayoutPart id="settings.backup.export"><BackupCard /></LayoutPart></LayoutParts>
+                  <LayoutParts
+                    sectionId="settings.backup"
+                    className="space-y-4"
+                  >
+                    <LayoutPart id="settings.backup.status">
+                      <BackupStatusCard />
+                    </LayoutPart>
+                    <LayoutPart id="settings.backup.export">
+                      <BackupCard />
+                    </LayoutPart>
+                  </LayoutParts>
                 </SettingsSection>
               </LayoutSection>
             )}
