@@ -533,7 +533,9 @@ class AndroidSavePlugin(private val activity: Activity) : Plugin(activity) {
                 }
             } ?: throw IllegalStateException("could not open the selected document")
             if (!target.exists() || target.length() == 0L) { target.delete(); throw IllegalStateException("selected document is empty") }
-            invoke.resolve(JSObject().put("path", target.absolutePath))
+            val result = JSObject()
+            result.put("path", target.absolutePath)
+            invoke.resolve(result)
         } catch (e: Exception) {
             invoke.reject(e.message ?: e.toString())
         }
