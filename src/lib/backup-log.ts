@@ -42,16 +42,29 @@ const MAX = 200;
 const listeners = new Set<() => void>();
 const live = new Set<string>();
 const externalLive = new Set<string>();
-const liveChannel =
-  typeof BroadcastChannel !== "undefined"
-    ? new BroadcastChannel("ks:backup-log-live")
-    : null;
-liveChannel?.addEventListener("message", (event) => {
-  const data = event.data as { type?: string; id?: string } | null;
-  if (!data?.id) return;
-  if (data.type === "begin") externalLive.add(data.id);
-  else if (data.type === "finish") externalLive.delete(data.id);
-});
+// Browser-only: SSR/prerender (Node) must never open a channel; Node's
+// BroadcastChannel differs from the DOM one and would keep the process alive.
+function createLiveChannel(): BroadcastChannel | null {
+  if (typeof window === "undefined") return null;
+  if (typeof BroadcastChannel === "undefined") return null;
+  try {
+    const channel = new BroadcastChannel("ks:backup-log-live");
+    if (typeof channel.addEventListener !== "function") {
+      channel.close();
+      return null;
+    }
+    channel.addEventListener("message", (event) => {
+      const data = event.data as { type?: string; id?: string } | null;
+      if (!data?.id) return;
+      if (data.type === "begin") externalLive.add(data.id);
+      else if (data.type === "finish") externalLive.delete(data.id);
+    });
+    return channel;
+  } catch {
+    return null; // observers must never break operations
+  }
+}
+const liveChannel = createLiveChannel();
 let cache: BackupLogEntry[] | null = null;
 if (typeof window !== "undefined")
   window.addEventListener("storage", (event) => {
@@ -317,7 +330,11 @@ export function beginOp(kind: BackupOpKind, summary = "Backup operation") {
   const id = crypto.randomUUID();
   const startedAt = new Date().toISOString();
   live.add(id);
-  liveChannel?.postMessage({ type: "begin", id });
+  try {
+    liveChannel?.postMessage({ type: "begin", id });
+  } catch {
+    /* observer only */
+  }
   const heartbeat = setInterval(() => touch(id), HEARTBEAT_MS);
   (heartbeat as { unref?: () => void }).unref?.();
   const entry: BackupLogEntry = {
@@ -360,7 +377,11 @@ export function beginOp(kind: BackupOpKind, summary = "Backup operation") {
     ) {
       clearInterval(heartbeat);
       live.delete(id);
-      liveChannel?.postMessage({ type: "finish", id });
+      try {
+        liveChannel?.postMessage({ type: "finish", id });
+      } catch {
+        /* observer only */
+      }
       const finishedAt = new Date().toISOString();
       const started = Date.parse(startedAt);
       const next = readRaw().map((e) =>
