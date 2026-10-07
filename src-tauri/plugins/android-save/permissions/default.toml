@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows saving generated files into the public Downloads folder, printing a generated PDF via the system print dialog, and reading/writing/deleting secrets in the Keystore-backed EncryptedSharedPreferences store."
+permissions = ["allow-save-to-downloads", "allow-open-private-file", "allow-copy-uri-to-private-file", "allow-delete-private-file", "allow-cleanup-pending-exports", "allow-print-pdf", "allow-secure-set", "allow-secure-get", "allow-secure-delete", "allow-start-stream-save", "allow-append-stream-save", "allow-finish-stream-save", "allow-abort-stream-save", "allow-request-camera-permission"]
