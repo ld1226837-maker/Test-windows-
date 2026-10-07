@@ -56,6 +56,13 @@ pub struct SaveRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CameraPermissionResponse {
+    /// True when the CAMERA runtime permission is granted for this app.
+    pub granted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveResponse {
     /// `content://` URI (API 29+) or absolute path of the saved file.
     pub uri: String,
@@ -223,6 +230,12 @@ impl<R: Runtime> AndroidSave<R> {
             .map_err(Into::into)
     }
 
+    pub fn request_camera_permission(&self) -> Result<CameraPermissionResponse> {
+        self.0
+            .run_mobile_plugin("requestCameraPermission", ())
+            .map_err(Into::into)
+    }
+
     pub fn secure_set(&self, payload: SecureSetRequest) -> Result<()> {
         self.0
             .run_mobile_plugin("secureSet", payload)
@@ -313,6 +326,12 @@ impl<R: Runtime> AndroidSave<R> {
         ))
     }
 
+    pub fn request_camera_permission(&self) -> Result<CameraPermissionResponse> {
+        Err(Error::Plugin(
+            "android-save is only available on Android".into(),
+        ))
+    }
+
     pub fn secure_set(&self, _payload: SecureSetRequest) -> Result<()> {
         Err(Error::Plugin(
             "android-save is only available on Android".into(),
@@ -388,6 +407,11 @@ fn cleanup_pending_exports<R: Runtime>(app: tauri::AppHandle<R>) -> Result<()> {
 }
 
 #[tauri::command]
+fn request_camera_permission<R: Runtime>(app: tauri::AppHandle<R>) -> Result<CameraPermissionResponse> {
+    app.android_save().request_camera_permission()
+}
+
+#[tauri::command]
 fn save_to_downloads<R: Runtime>(
     app: tauri::AppHandle<R>,
     payload: SaveRequest,
@@ -452,7 +476,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             append_stream_save,
             finish_stream_save,
             abort_stream_save,
-            cleanup_pending_exports
+            cleanup_pending_exports,
+            request_camera_permission
         ])
         .setup(|app, _api| {
             #[cfg(target_os = "android")]

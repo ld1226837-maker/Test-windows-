@@ -257,6 +257,18 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
   ],
 
   /* --------------------------- Settings ------------------------- */
+  "settings.telegram": [
+    p("settings.telegram.status", "Backup status", "summary", true),
+    p("settings.telegram.connection", "Telegram connection", "panel", true),
+    p("settings.telegram.actions", "Backup and restore actions", "action", true),
+    p("settings.telegram.progress", "Operation progress", "panel"),
+  ],
+  "settings.backup": [
+    p("settings.backup.status", "Backup status", "summary", true),
+    p("settings.backup.export", "Local backup actions", "action", true),
+    p("settings.backup.progress", "Operation progress", "panel"),
+    p("settings.backup.log", "Backup activity log", "list", true),
+  ],
   "settings.billing": [
     p("settings.billing.business-name", "Business name", "field", true),
     p("settings.billing.gst", "GST number"),

@@ -39,6 +39,8 @@ import {
   decryptFullBackupBytes,
   encryptFullBackupBytes,
 } from "./backup-crypto";
+import { beginOp, errorCodeFor, redact } from "./backup-log";
+import type { OpPhase } from "./operation-progress";
 
 /**
  * Telegram full backup — ONE archive, ONE destination, ONE restore action.
@@ -449,7 +451,9 @@ export type BuildFullBackupResult = {
  */
 export async function buildFullBackup(
   deviceLabel = defaultDeviceLabel(),
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void,
 ): Promise<BuildFullBackupResult> {
+  onProgress?.({ phase: "reading" });
   // Snapshot all IndexedDB metadata together. Photo bytes are read only after
   // this transaction, so a concurrent expense edit cannot produce a backup
   // whose tables describe one state while its receipt manifest describes another.
@@ -479,6 +483,7 @@ export async function buildFullBackup(
       bills: await db.bills.toArray(),
     }),
   );
+  onProgress?.({ phase: "reading", done: DATA_TABLES.length, total: DATA_TABLES.length });
   const tables: FullBackup["tables"] = snapshot.tables;
   const receiptMeta: Record<string, unknown>[] = snapshot.receiptMeta.map(
     (r) => ({
@@ -535,6 +540,7 @@ export async function buildFullBackup(
       typeof window === "undefined" ? null : window.localStorage.getItem(k);
 
   const expenses = snapshot.expenses;
+  onProgress?.({ phase: "compressing" });
   const withReceipts = [
     ...expenses.filter(
       (e): e is ExpenseRow & { receipt_path: string } => !!e.receipt_path,
@@ -1018,9 +1024,22 @@ export async function restoreFullBackup(
   mode: "replace" | "merge" = "replace",
   passphraseOverride?: string,
 ): Promise<RestoreFullBackupResult> {
-  return withMigrationLock(() =>
-    restoreFullBackupImpl(archiveBytes, mode, passphraseOverride),
-  );
+  const op = beginOp("telegram-restore", "Restoring latest Telegram backup");
+  try {
+    const result = await withMigrationLock(() =>
+      restoreFullBackupImpl(archiveBytes, mode, passphraseOverride),
+    );
+    op.finish(result.filesCorrupted.length ? "warning" : "success", "Telegram restore completed", {
+      records: result.rowsRestored,
+      photos: { saved: result.filesRestored, missing: result.filesSkippedUnmatched + result.filesCorrupted.length },
+      encrypted: true,
+    });
+    onProgress?.({ phase: "finalizing", done: 1, total: 1, label: "Finalizing Telegram restore" });
+    return result;
+  } catch (e) {
+    op.finish("error", "Telegram restore failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
+  }
 }
 
 /**
@@ -1043,6 +1062,8 @@ export async function previewFullBackup(
   mode: "replace" | "merge" = "replace",
   passphraseOverride?: string,
 ): Promise<FullBackupPreview> {
+  const op = beginOp("preview", "Previewing Telegram restore");
+  try {
   let bytes =
     archiveBytes instanceof Uint8Array
       ? archiveBytes
@@ -1093,13 +1114,19 @@ export async function previewFullBackup(
     else filesToAdd++;
   }
 
-  return {
+  const result = {
     mode,
     tables,
     filesToAdd,
     filesSkippedExisting,
     filesSkippedUnmatched,
   };
+  op.finish("success", "Telegram restore preview ready", { records: tables.totalAdded, photos: { saved: filesToAdd, missing: filesSkippedUnmatched } });
+  return result;
+  } catch (e) {
+    op.finish("error", "Telegram restore preview failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1149,36 +1176,42 @@ export async function assertLocalFullCopyWithinMemoryBudget(): Promise<void> {
 export async function saveFullBackupLocally(
   bytes: Uint8Array,
   name = fullBackupFileName(),
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void,
 ): Promise<string | null> {
-  if (isAndroid()) {
-    const result = await saveExportFile(bytes, name, "application/zip");
-    if (!result.saved)
-      throw new Error(
-        `Couldn't save the backup: ${result.error ?? "unknown reason"}`,
-      );
-    return result.path ?? name;
+  onProgress?.({ phase: "writing", bytesDone: 0, bytesTotal: bytes.byteLength });
+  const op = beginOp("local-export", "Saving local full backup");
+  try {
+    if (isAndroid()) {
+      const result = await saveExportFile(bytes, name, "application/zip");
+      if (!result.saved) throw new Error(`Couldn't save the backup: ${result.error ?? "unknown reason"}`);
+      onProgress?.({ phase: "writing", bytesDone: bytes.byteLength, bytesTotal: bytes.byteLength });
+      op.finish("success", "Local full backup saved", { bytes: bytes.byteLength });
+      return result.path ?? name;
+    }
+    if (isDesktop()) {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { writeFile } = await import("@tauri-apps/plugin-fs");
+      const path = await save({ defaultPath: name, filters: [{ name: "Full backup", extensions: ["zip"] }] });
+      if (!path) {
+        op.finish("cancelled", "Local full backup cancelled", { bytes: bytes.byteLength });
+        return null;
+      }
+      await writeFile(path, bytes);
+      onProgress?.({ phase: "writing", bytesDone: bytes.byteLength, bytesTotal: bytes.byteLength });
+      op.finish("success", "Local full backup saved", { bytes: bytes.byteLength });
+      return path;
+    }
+    const blob = new Blob([bytes.buffer.slice(0) as ArrayBuffer], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+    onProgress?.({ phase: "writing", bytesDone: bytes.byteLength, bytesTotal: bytes.byteLength });
+    op.finish("success", "Local full backup downloaded", { bytes: bytes.byteLength });
+    return name;
+  } catch (e) {
+    op.finish("error", "Local full backup failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
   }
-  if (isDesktop()) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const path = await save({
-      defaultPath: name,
-      filters: [{ name: "Full backup", extensions: ["zip"] }],
-    });
-    if (!path) return null;
-    await writeFile(path, bytes);
-    return path;
-  }
-  const blob = new Blob([bytes.buffer.slice(0) as ArrayBuffer], {
-    type: "application/zip",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
-  return name;
 }
 
 /** Desktop-only native open dialog for a saved full backup. `null` = cancelled. */
@@ -1381,12 +1414,16 @@ export async function readTelegramConfig(): Promise<TelegramConfig> {
 }
 
 export async function writeTelegramConfig(cfg: TelegramConfig): Promise<void> {
-  const { botToken, extraBotTokens, ...meta } = cfg;
-  writeMeta(meta);
-  await Promise.all([
-    writeToken(botToken),
-    writeExtraTokens(extraBotTokens ?? []),
-  ]);
+  const op = beginOp("telegram-config", "Saving Telegram configuration");
+  try {
+    const { botToken, extraBotTokens, ...meta } = cfg;
+    writeMeta(meta);
+    await Promise.all([writeToken(botToken), writeExtraTokens(extraBotTokens ?? [])]);
+    op.finish("success", "Telegram configuration saved");
+  } catch (e) {
+    op.finish("error", "Telegram configuration could not be saved", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
+  }
 }
 
 export function isTelegramConfigured(cfg: TelegramConfig): boolean {
@@ -1395,11 +1432,19 @@ export function isTelegramConfigured(cfg: TelegramConfig): boolean {
 
 export async function validateTelegramConfig(
   cfg: TelegramConfig,
-): Promise<void> {
-  if (!cfg.botToken?.trim()) throw new Error("Enter the Telegram bot token.");
-  if (!cfg.chatId?.trim()) throw new Error("Enter the Telegram chat ID.");
-  await callApi(cfg.botToken, "getMe", {});
-  await callApi(cfg.botToken, "getChat", { chat_id: cfg.chatId });
+): Promise<{ username?: string }> {
+  const op = beginOp("telegram-config", "Validating Telegram configuration");
+  try {
+    if (!cfg.botToken?.trim()) throw new Error("Enter the Telegram bot token.");
+    if (!cfg.chatId?.trim()) throw new Error("Enter the Telegram chat ID.");
+    const me = await callApi<{ username?: string }>(cfg.botToken, "getMe", {});
+    await callApi(cfg.botToken, "getChat", { chat_id: cfg.chatId });
+    op.finish("success", "Telegram configuration validated");
+    return { username: me?.username };
+  } catch (e) {
+    op.finish("error", "Telegram configuration validation failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1425,13 +1470,13 @@ export function encodePairingPayload(cfg: TelegramConfig): string {
 
 /** Pure — reads a scanned QR's text back into credentials, or throws. */
 export function decodePairingPayload(text: string): PairingPayload {
-  let parsed: Partial<PairingPayload>;
+  let parsed: Partial<PairingPayload> & { v?: number };
   try {
     parsed = JSON.parse(text) as Partial<PairingPayload>;
   } catch {
     throw new Error("That QR code isn't a Telegram backup setup code");
   }
-  if (!parsed.botToken || !parsed.chatId)
+  if (parsed.v !== 1 || !parsed.botToken || !parsed.chatId)
     throw new Error("That QR code is missing the bot token or chat ID");
   return {
     botToken: String(parsed.botToken),
@@ -1647,12 +1692,12 @@ const sleep = (ms: number) =>
 async function telegramFetch(
   url: string,
   init?: RequestInit,
-  options: { retryNetwork?: boolean } = {},
+  options: { retryNetwork?: boolean; signal?: AbortSignal } = {},
 ): Promise<Response> {
   const retryNetwork = options.retryNetwork !== false;
   for (let attempt = 1; attempt <= MAX_CHUNK_ATTEMPTS; attempt++) {
     try {
-      return await fetch(url, init);
+      return await fetch(url, { ...init, signal: options.signal ?? init?.signal });
     } catch {
       if (attempt < MAX_CHUNK_ATTEMPTS)
         await sleep(retryAfterMs(null, attempt));
@@ -1676,7 +1721,9 @@ export function telegramErrorMessage(status: number, body: unknown): string {
   return `Telegram refused the request: ${description}`;
 }
 
-export type UploadProgress = { part: number; total: number };
+/** One Telegram rate-limit / 5xx wait, reported to progress UIs. */
+export type RetryInfo = { attempt: number; max: number; retryAfterMs: number };
+export type UploadProgress = { part: number; total: number; phase?: "preparing" | "encrypting" | "uploading" | "downloading" | "verifying" | "restoring-records" | "restoring-photos" | "finalizing"; bytesDone?: number; bytesTotal?: number; retry?: RetryInfo };
 
 export type UploadResult = {
   session: string;
@@ -1732,6 +1779,7 @@ async function uploadChunks(
   makeFileName: (part: number, total: number) => string,
   makeCaption: (part: number, total: number) => string,
   onProgress?: (p: UploadProgress) => void,
+  signal?: AbortSignal,
 ): Promise<{
   messageIds: number[];
   botIndexes: number[];
@@ -1742,10 +1790,12 @@ async function uploadChunks(
   const messageIds: number[] = [];
   const botIndexes: number[] = [];
   const fileIds: string[] = [];
+  let bytesDone = 0;
 
   for (let i = 0; i < parts.length; i++) {
+    if (signal?.aborted) throw new DOMException("The backup was cancelled", "AbortError");
     const part = i + 1;
-    onProgress?.({ part, total: parts.length });
+    onProgress?.({ part, total: parts.length, phase: "uploading", bytesDone, bytesTotal: bytes.byteLength });
     const fileName = makeFileName(part, parts.length);
     const caption = makeCaption(part, parts.length);
     const token = botTokenForChunk(cfg, i);
@@ -1772,6 +1822,7 @@ async function uploadChunks(
           {
             method: "POST",
             body: form,
+            signal,
           },
           { retryNetwork: false },
         );
@@ -1805,6 +1856,8 @@ async function uploadChunks(
       } | null;
 
       if (res.ok && body?.ok) {
+        bytesDone += (parts[i] as Uint8Array).byteLength;
+        onProgress?.({ part, total: parts.length, phase: "uploading", bytesDone, bytesTotal: bytes.byteLength });
         // A successful sendDocument response must include the message ID.
         // Without it we cannot persist the last-upload pointer or reliably
         // recover the exact Telegram message later via forwardMessage.
@@ -1846,7 +1899,9 @@ async function uploadChunks(
         continue;
       }
       if (res.status === 429 && attempt < MAX_CHUNK_ATTEMPTS) {
-        await sleep(retryAfterMs(body, attempt));
+        const waitMs = retryAfterMs(body, attempt);
+        onProgress?.({ part, total: parts.length, phase: "uploading", bytesDone, bytesTotal: bytes.byteLength, retry: { attempt, max: MAX_CHUNK_ATTEMPTS, retryAfterMs: waitMs } });
+        await sleep(waitMs);
         continue;
       }
       throw new Error(telegramErrorMessage(res.status, body));
@@ -1856,13 +1911,14 @@ async function uploadChunks(
   return { messageIds, botIndexes, fileIds, parts: parts.length };
 }
 
-export async function uploadFullBackup(
+async function uploadFullBackupImpl(
   cfg: TelegramConfig,
   archiveBytes: Uint8Array,
   options: {
     session?: string;
     deviceLabel?: string;
     onProgress?: (p: UploadProgress) => void;
+    signal?: AbortSignal;
   } = {},
 ): Promise<UploadResult> {
   if (!isTelegramConfigured(cfg))
@@ -1880,6 +1936,7 @@ export async function uploadFullBackup(
     (part, total) => chunkFileName(session, part, total),
     (part, total) => chunkCaption(session, part, total, deviceLabel),
     options.onProgress,
+    options.signal,
   );
 
   const uploadInfo = {
@@ -2007,7 +2064,7 @@ export type UploadYearArchiveResult = {
  * the upload is the safety net that makes local deletion acceptable, so
  * this throws (rather than failing silently) on any Telegram error.
  */
-export async function uploadYearArchive(
+async function uploadYearArchiveImpl(
   cfg: TelegramConfig,
   year: number,
   archiveBytes: Uint8Array,
@@ -2015,6 +2072,7 @@ export async function uploadYearArchive(
     session?: string;
     deviceLabel?: string;
     onProgress?: (p: UploadProgress) => void;
+    signal?: AbortSignal;
   } = {},
 ): Promise<UploadYearArchiveResult> {
   if (!isTelegramConfigured(cfg))
@@ -2033,6 +2091,7 @@ export async function uploadYearArchive(
     (part, total) =>
       yearArchiveCaption(year, session, part, total, deviceLabel),
     options.onProgress,
+    options.signal,
   );
 
   rememberLastYearArchiveUpload({
@@ -2183,13 +2242,14 @@ async function callApi<T>(
   token: string,
   method: string,
   params: Record<string, unknown>,
+  options: { signal?: AbortSignal; onRetry?: (retry: RetryInfo) => void } = {},
 ): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     const res = await telegramFetch(`${API_ROOT}/bot${token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
-    });
+    }, { signal: options.signal });
     const body = (await res.json().catch(() => null)) as {
       ok?: boolean;
       result?: T;
@@ -2199,7 +2259,10 @@ async function callApi<T>(
       (res.status === 429 || res.status >= 500) &&
       attempt < MAX_CHUNK_ATTEMPTS
     ) {
-      await sleep(retryAfterMs(body, attempt));
+      const waitMs = retryAfterMs(body, attempt);
+      // Observer only: lets the progress bar show a live "retrying in N s".
+      try { options.onRetry?.({ attempt, max: MAX_CHUNK_ATTEMPTS, retryAfterMs: waitMs }); } catch { /* observer */ }
+      await sleep(waitMs);
       continue;
     }
     throw new Error(telegramErrorMessage(res.status, body));
@@ -2210,18 +2273,39 @@ async function callApi<T>(
 export async function downloadChunk(
   token: string,
   fileId: string,
+  options: { signal?: AbortSignal; onProgress?: (done: number, total?: number) => void; onRetry?: (retry: RetryInfo) => void } = {},
 ): Promise<Uint8Array> {
   const file = await callApi<{ file_path?: string }>(token, "getFile", {
     file_id: fileId,
-  });
+  }, { signal: options.signal, onRetry: options.onRetry });
   if (!file?.file_path)
     throw new Error("Telegram didn't return a download path for that part.");
   const res = await telegramFetch(
     `${API_ROOT}/file/bot${token}/${file.file_path}`,
+    undefined,
+    { signal: options.signal },
   );
   if (!res.ok)
     throw new Error(`Couldn't download a backup part (HTTP ${res.status}).`);
-  return new Uint8Array(await res.arrayBuffer());
+  const total = Number(res.headers.get("content-length") ?? "");
+  if (!res.body) {
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    options.onProgress?.(bytes.byteLength, Number.isFinite(total) ? total : undefined);
+    return bytes;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let done = 0;
+  for (;;) {
+    if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
+    const part = await reader.read();
+    if (part.done) break;
+    if (part.value) { chunks.push(part.value); done += part.value.byteLength; options.onProgress?.(done, Number.isFinite(total) ? total : undefined); }
+  }
+  const bytes = new Uint8Array(done);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
 }
 
 /**
@@ -2234,7 +2318,7 @@ export async function downloadChunk(
  * empty. Either way the parts are grouped by session id, never by arrival
  * order.
  */
-export async function fetchLatestFullBackupArchive(
+async function fetchLatestFullBackupArchiveImpl(
   cfg: TelegramConfig,
   onProgress?: (p: UploadProgress) => void,
 ): Promise<{ session: string; bytes: Uint8Array }> {
@@ -2326,6 +2410,7 @@ export async function fetchLatestFullBackupArchive(
       await downloadChunk(
         group.chunks[i]!.botToken ?? botTokenForChunk(cfg, i),
         group.chunks[i]!.fileId,
+        { onRetry: (retry) => onProgress?.({ part: i + 1, total: group.chunks.length, phase: "downloading", retry }) },
       ),
     );
   }
@@ -2386,8 +2471,10 @@ export async function buildShardedFullBackup(
       total: number,
     ) => void | Promise<void>;
     collectShards?: boolean;
+    onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void;
   } = {},
 ): Promise<ShardedBuildResult> {
+  opts.onProgress?.({ phase: "reading" });
   // Snapshot the expense/receipt relationship before planning shards. This
   // prevents an edit between planning and byte reads from silently changing
   // which receipt belongs to which expense. The actual table payload remains
@@ -2768,7 +2855,8 @@ export type ShardedTelegramUploadResult = {
 async function uploadShardedFullBackupImpl(
   cfg: TelegramConfig,
   deviceLabel = cfg.deviceLabel ?? defaultDeviceLabel(),
-  onProgress?: (p: { shard: number; total: number }) => void,
+  onProgress?: (p: { shard: number; total: number; phase?: UploadProgress["phase"]; bytesDone?: number; bytesTotal?: number; retry?: UploadProgress["retry"] }) => void,
+  signal?: AbortSignal,
 ): Promise<ShardedTelegramUploadResult> {
   if (!isTelegramConfigured(cfg))
     throw new Error(
@@ -2778,9 +2866,11 @@ async function uploadShardedFullBackupImpl(
   const messageIds: number[] = [];
   const botIndexes: number[] = [];
   const shardFileIds: string[] = [];
+  try {
   const built = await buildShardedFullBackup(deviceLabel, {
     collectShards: false,
     onShardBuilt: async (plainShard, index, total) => {
+      onProgress?.({ shard: index, total, phase: "encrypting", bytesDone: 0, bytesTotal: plainShard.byteLength });
       const encrypted = await encryptFullBackupBytes(plainShard);
       // The plaintext cap above reserves the exact fixed AES-GCM container
       // overhead. Keep this assertion at the transport boundary too: if the
@@ -2802,6 +2892,8 @@ async function uploadShardedFullBackupImpl(
         () => shardedShardFileName(session, index, total),
         () =>
           `Sharded full backup ${session} shard ${index}/${total} from ${deviceLabel}`,
+        (progress) => onProgress?.({ shard: index, total, phase: progress.phase, bytesDone: progress.bytesDone, bytesTotal: progress.bytesTotal, retry: progress.retry }),
+        signal,
       );
       messageIds.push(...ids);
       botIndexes.push(...indexes);
@@ -2896,20 +2988,63 @@ async function uploadShardedFullBackupImpl(
     manifestMessageId,
     missingFiles: built.missingFiles,
   };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError" && messageIds.length) {
+      for (let i = 0; i < messageIds.length; i++) {
+        try {
+          await callApi(botTokenForChunk(cfg, botIndexes[i] ?? i), "deleteMessage", { chat_id: cfg.chatId, message_id: messageIds[i] });
+        } catch { /* cancellation cleanup is best effort */ }
+      }
+    }
+    throw error;
+  }
+
 }
 
 /** Full sharded upload is a migration operation: a backup built while another
  * restore/import is mutating IndexedDB could capture a mixed state and then
  * become the newest Telegram backup. Keep the lock around the entire build +
  * upload + retention publication, not just the restore path. */
+export async function uploadFullBackup(
+  cfg: TelegramConfig,
+  archiveBytes: Uint8Array,
+  options: { session?: string; deviceLabel?: string; onProgress?: (p: UploadProgress) => void } = {},
+): Promise<UploadResult> {
+  const op = beginOp("telegram-upload", "Telegram backup upload");
+  let retries = 0; let retryAfterMs: number | undefined;
+  const wrappedOptions = { ...options, onProgress: (progress: UploadProgress) => { if (progress.retry) { retries = Math.max(retries, progress.retry.attempt); retryAfterMs = progress.retry.retryAfterMs; } options.onProgress?.(progress); } };
+  try { const result = await uploadFullBackupImpl(cfg, archiveBytes, wrappedOptions); op.finish("success", "Telegram backup completed", { parts: { done: result.parts, total: result.parts }, bytes: archiveBytes.byteLength, encrypted: true, ...(retries ? { retries, retryAfterMs } : {}) }); return result; }
+  catch (e) { op.finish("error", "Telegram backup failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)), ...(retries ? { retries, retryAfterMs } : {}) }); throw e; }
+}
+
+export async function uploadYearArchive(
+  cfg: TelegramConfig,
+  year: number,
+  archiveBytes: Uint8Array,
+  options: { session?: string; deviceLabel?: string; onProgress?: (p: UploadProgress) => void } = {},
+): Promise<UploadYearArchiveResult> {
+  const op = beginOp("telegram-year-archive", `Uploading ${year} archive`);
+  let retries = 0; let retryAfterMs: number | undefined;
+  const wrappedOptions = { ...options, onProgress: (progress: UploadProgress) => { if (progress.retry) { retries = Math.max(retries, progress.retry.attempt); retryAfterMs = progress.retry.retryAfterMs; } options.onProgress?.(progress); } };
+  try { const result = await uploadYearArchiveImpl(cfg, year, archiveBytes, wrappedOptions); op.finish("success", `Year ${year} archive uploaded`, { parts: { done: result.parts, total: result.parts }, bytes: archiveBytes.byteLength, encrypted: true, ...(retries ? { retries, retryAfterMs } : {}) }); return result; }
+  catch (e) { op.finish("error", `Year ${year} archive upload failed`, { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)), ...(retries ? { retries, retryAfterMs } : {}) }); throw e; }
+}
+
 export async function uploadShardedFullBackup(
   cfg: TelegramConfig,
   deviceLabel = cfg.deviceLabel ?? defaultDeviceLabel(),
-  onProgress?: (p: { shard: number; total: number }) => void,
+  onProgress?: (p: { shard: number; total: number; phase?: UploadProgress["phase"]; bytesDone?: number; bytesTotal?: number; retry?: UploadProgress["retry"] }) => void,
+  options: { log?: boolean; signal?: AbortSignal } = {},
 ): Promise<ShardedTelegramUploadResult> {
-  return withMigrationLock(() =>
-    uploadShardedFullBackupImpl(cfg, deviceLabel, onProgress),
-  );
+  const op = options.log === false ? null : beginOp("telegram-upload", "Telegram backup upload");
+  try {
+    const result = await withMigrationLock(() => uploadShardedFullBackupImpl(cfg, deviceLabel, onProgress, options.signal));
+    op?.finish("success", "Telegram backup completed", { parts: { done: result.shardCount, total: result.shardCount }, encrypted: true });
+    return result;
+  } catch (e) {
+    op?.finish("error", "Telegram backup failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) });
+    throw e;
+  }
 }
 
 type ShardedRemoteSet = {
@@ -2990,6 +3125,7 @@ export function parseTelegramMessageLocator(input: string): number {
 export async function fetchShardedFullBackupByMessage(
   cfg: TelegramConfig,
   messageLocator: string,
+  options: { signal?: AbortSignal; onProgress?: (p: TelegramRestoreProgress) => void } = {},
 ): Promise<{
   session: string;
   top: FullBackupTopManifest;
@@ -3012,12 +3148,13 @@ export async function fetchShardedFullBackupByMessage(
           from_chat_id: cfg.chatId,
           message_id: messageId,
         },
+        { signal: options.signal },
       );
       const doc = forwarded?.document;
       if (!doc?.file_id || !doc.file_name) continue;
       const parsedManifest = parseShardedManifestName(doc.file_name);
       if (!parsedManifest) continue;
-      const manifestBytes = await downloadChunk(token, doc.file_id);
+      const manifestBytes = await downloadChunk(token, doc.file_id, { signal: options.signal, onRetry: (retry: RetryInfo) => options.onProgress?.({ phase: "downloading", retry }) });
       const top = JSON.parse(
         new TextDecoder().decode(await decryptFullBackupBytes(manifestBytes)),
       ) as FullBackupTopManifest;
@@ -3083,10 +3220,11 @@ export async function fetchShardedFullBackupByMessage(
           top,
           shards: {
             fetch: async (index) => {
+              if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
               const shard = ordered[index];
               if (!shard) return null;
               return decryptFullBackupBytes(
-                await downloadChunk(shard.botToken ?? token, shard.fileId),
+                await downloadChunk(shard.botToken ?? token, shard.fileId, { signal: options.signal, onRetry: (retry: RetryInfo) => options.onProgress?.({ phase: "downloading", retry }) }),
               );
             },
           },
@@ -3157,10 +3295,11 @@ export async function fetchShardedFullBackupByMessage(
         top,
         shards: {
           fetch: async (index) => {
+            if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
             const shard = ordered[index];
             if (!shard) return null;
             return decryptFullBackupBytes(
-              await downloadChunk(shard.botToken ?? token, shard.fileId),
+              await downloadChunk(shard.botToken ?? token, shard.fileId, { signal: options.signal, onRetry: (retry: RetryInfo) => options.onProgress?.({ phase: "downloading", retry }) }),
             );
           },
         },
@@ -3174,8 +3313,9 @@ export async function fetchShardedFullBackupByMessage(
   );
 }
 
-export async function fetchLatestShardedFullBackup(
+async function fetchLatestShardedFullBackupImpl(
   cfg: TelegramConfig,
+  options: { onProgress?: (p: TelegramRestoreProgress) => void; signal?: AbortSignal } = {},
 ): Promise<{
   session: string;
   top: FullBackupTopManifest;
@@ -3185,6 +3325,7 @@ export async function fetchLatestShardedFullBackup(
     throw new Error(
       "Add the bot token and chat ID before restoring from Telegram.",
     );
+  if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
   const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
   const found: RemoteChunk[] = [];
   // Prefer the pinned manifest. This survives replacement-device restore and
@@ -3199,7 +3340,7 @@ export async function fetchLatestShardedFullBackup(
       if (doc?.file_id && doc.file_name) {
         const parsed = parseShardedManifestName(doc.file_name);
         if (parsed) {
-          const manifestBytes = await downloadChunk(token, doc.file_id);
+          const manifestBytes = await downloadChunk(token, doc.file_id, { signal: options.signal, onRetry: (retry: RetryInfo) => options.onProgress?.({ phase: "downloading", retry }) });
           const top = JSON.parse(
             new TextDecoder().decode(
               await decryptFullBackupBytes(manifestBytes),
@@ -3229,12 +3370,14 @@ export async function fetchLatestShardedFullBackup(
               top,
               shards: {
                 fetch: async (index) => {
+                  if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
                   const shard = ordered[index];
                   return shard
                     ? decryptFullBackupBytes(
                         await downloadChunk(
                           shard.botToken ?? token,
                           shard.fileId,
+                          { signal: options.signal, onRetry: (retry) => options.onProgress?.({ phase: "downloading", retry }) },
                         ),
                       )
                     : null;
@@ -3343,11 +3486,13 @@ export async function fetchLatestShardedFullBackup(
   );
   const shards: ShardSource = {
     fetch: async (index) => {
+      if (options.signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
       const shard = ordered[index];
       if (!shard) return null;
       const encrypted = await downloadChunk(
         shard.botToken ?? cfg.botToken,
         shard.fileId,
+        { signal: options.signal, onRetry: (retry) => options.onProgress?.({ phase: "downloading", retry }) },
       );
       return decryptFullBackupBytes(encrypted);
     },
@@ -3361,6 +3506,15 @@ export async function fetchLatestShardedFullBackup(
  * (R7: bounded memory at 30k). */
 export type ShardSource = {
   fetch(index: number): Promise<Uint8Array | null>;
+};
+
+export type TelegramRestoreProgress = {
+  phase: "downloading" | "verifying" | "restoring-records" | "restoring-photos" | "finalizing";
+  done?: number;
+  total?: number;
+  label?: string;
+  /** Present only while a download is waiting out a Telegram 429/5xx. */
+  retry?: RetryInfo;
 };
 
 type TelegramRestoreJournal = {
@@ -3522,6 +3676,8 @@ async function restoreFullBackupShardedImpl(
   shards: Uint8Array[] | ShardSource,
   mode: "replace" | "merge" = "replace",
   top?: FullBackupTopManifest | null,
+  onProgress?: (p: TelegramRestoreProgress) => void,
+  signal?: AbortSignal,
 ): Promise<RestoreFullBackupResult> {
   const JSZip = await loadJSZip();
   const result: RestoreFullBackupResult = {
@@ -3571,6 +3727,8 @@ async function restoreFullBackupShardedImpl(
   let validatedCount = 0;
   let expectedCount = top?.shardCount ?? Number.MAX_SAFE_INTEGER;
   for (let i = 0; i < expectedCount; i++) {
+    if (signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
+    onProgress?.({ phase: "downloading", done: i, total: expectedCount === Number.MAX_SAFE_INTEGER ? undefined : expectedCount, label: `Downloading backup part ${i + 1}` });
     const bytes = await source.fetch(i);
     if (bytes === null || bytes.length === 0) break;
     if (
@@ -3670,6 +3828,7 @@ async function restoreFullBackupShardedImpl(
       }
     }
     validatedCount++;
+    onProgress?.({ phase: "verifying", done: validatedCount, total: expectedCount === Number.MAX_SAFE_INTEGER ? validatedCount : expectedCount, label: `Verified backup part ${validatedCount}${expectedCount !== Number.MAX_SAFE_INTEGER ? `/${expectedCount}` : ""}` });
     if (!top && bytes.length === 0) break;
   }
   if (validatedCount !== expectedCount)
@@ -3729,6 +3888,8 @@ async function restoreFullBackupShardedImpl(
         `Telegram backup contains an unexpected extra shard after ${expectedCount}; nothing was restored.`,
       );
   }
+
+  if (signal?.aborted) throw new DOMException("The Telegram restore was cancelled before data was written.", "AbortError");
 
   // Snapshot only the relatively small table state. Receipt bytes are kept in
   // place during the transaction; this is what lets a failed Telegram restore
@@ -3803,11 +3964,14 @@ async function restoreFullBackupShardedImpl(
     // A journal marked rollingBack means the previous attempt crashed while
     // undoing its metadata. Re-run the metadata import from the validated
     // backup rather than trusting a partially restored database.
+    onProgress?.({ phase: "restoring-records", done: 0, total: DATA_TABLES.length, label: "Restoring records" });
     if (!journal?.dbCommitted || journal.phase === "rollingBack") {
       result.rowsRestored = await restoreBackup(aggregateBackup, mode, {
         alreadyLocked: true,
+        onProgress: (progress) => onProgress?.({ phase: progress.phase === "restoring-photos" ? "restoring-photos" : progress.phase === "restoring-records" ? "restoring-records" : progress.phase === "verifying" ? "verifying" : "restoring-records", done: progress.done, total: progress.total, label: progress.label }),
       });
     }
+    onProgress?.({ phase: "restoring-records", done: DATA_TABLES.length, total: DATA_TABLES.length, label: `Restored records (${result.rowsRestored.toLocaleString()} rows)` });
     if (aggregatedReceiptHashes.length) {
       await db.transaction("rw", [db.receipt_hashes], async () => {
         if (mode === "replace") await db.receipt_hashes.clear();
@@ -3816,9 +3980,11 @@ async function restoreFullBackupShardedImpl(
       });
     }
 
+    onProgress?.({ phase: "restoring-photos", done: 0, total: validatedIncomingPhotoPaths.size, label: `Restoring receipt photos (0/${validatedIncomingPhotoPaths.size})` });
     // Apply photos shard-by-shard. Every photo is checksum-verified before it
     // is committed. On an ordinary failure, newly-created photos are removed
     // and all business tables are restored from the pre-restore snapshot.
+    let photoDone = 0;
     for (let i = 0; i < validatedCount; i++) {
       // Revisit every shard on retry. Durable checkpoints are informational only;
       // storage is revalidated below so a crash or external deletion cannot turn
@@ -3888,6 +4054,8 @@ async function restoreFullBackupShardedImpl(
               result.filesSkippedExisting++;
             }
             completedPhotos.add(f.path);
+            photoDone++;
+            onProgress?.({ phase: "restoring-photos", done: photoDone, total: validatedIncomingPhotoPaths.size, label: `Restoring receipt photos (${photoDone}/${validatedIncomingPhotoPaths.size})` });
             continue;
           }
           await saveToAppDocuments(f.path, bytes);
@@ -3917,6 +4085,8 @@ async function restoreFullBackupShardedImpl(
               );
             result.filesSkippedExisting++;
             completedPhotos.add(f.path);
+            photoDone++;
+            onProgress?.({ phase: "restoring-photos", done: photoDone, total: validatedIncomingPhotoPaths.size, label: `Restoring receipt photos (${photoDone}/${validatedIncomingPhotoPaths.size})` });
             continue;
           }
           await db.receipts.put({
@@ -3933,6 +4103,8 @@ async function restoreFullBackupShardedImpl(
         }
         result.filesRestored++;
         completedPhotos.add(f.path);
+        photoDone++;
+        onProgress?.({ phase: "restoring-photos", done: photoDone, total: validatedIncomingPhotoPaths.size, label: `Restoring receipt photos (${photoDone}/${validatedIncomingPhotoPaths.size})` });
       }
       completed.add(i);
       if (backupId)
@@ -4093,12 +4265,52 @@ async function restoreFullBackupShardedImpl(
  * potentially long receipt-photo phase so another migration cannot interleave
  * with a sharded restore.
  */
-export async function restoreFullBackupSharded(
-  shards: Uint8Array[] | ShardSource,
-  mode: "replace" | "merge" = "replace",
-  top?: FullBackupTopManifest | null,
-): Promise<RestoreFullBackupResult> {
-  return withMigrationLock(() =>
-    restoreFullBackupShardedImpl(shards, mode, top),
-  );
+export async function detectTelegramChatId(cfg: TelegramConfig): Promise<string | null> {
+  if (!cfg.botToken?.trim()) throw new Error("Enter the Telegram bot token first.");
+  const updates = await callApi<TelegramUpdate[]>(cfg.botToken, "getUpdates", { limit: 100, allowed_updates: ["message", "channel_post"] });
+  for (const update of updates ?? []) {
+    const chat = update.message?.chat ?? update.channel_post?.chat;
+    const id = chat?.id;
+    if (id != null) return String(id);
+  }
+  return null;
+}
+
+export type TelegramScanResult = { botToken?: string; chatId?: string; extraBotTokens?: string[]; lastUpload?: LastUpload; source: "pairing" | "token" | "chat-id" };
+const TELEGRAM_TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
+const TELEGRAM_CHAT_ID = /^-?\d{5,}$/;
+export function parseTelegramScan(input: string): TelegramScanResult {
+  const text = input.replace(/[\u200B-\u200D\uFEFF]/g, "").trim().replace(/^["']|["']$/g, "");
+  if (text.length > 4096) throw new Error("That code doesn't look like Telegram bot details");
+  try { return { ...decodePairingPayload(text), source: "pairing" }; } catch { /* generic formats */ }
+  // Accept `.../bot<TOKEN>`, `.../bot<TOKEN>/method` and `.../bot<TOKEN>?query`.
+  // Only the token (and an explicit chat_id parameter) is taken; the rest of the URL is dropped.
+  const url = text.match(/^https?:\/\/api\.telegram\.org\/bot([^/?#\s]+)(?:[/?#].*)?$/i);
+  if (url?.[1]) {
+    if (!TELEGRAM_TOKEN.test(url[1])) throw new Error("That code doesn't look like Telegram bot details");
+    const chat = text.match(/[?&]chat_id=(-?\d{5,})(?:[&#]|$)/)?.[1];
+    return { botToken: url[1], ...(chat && TELEGRAM_CHAT_ID.test(chat) ? { chatId: chat } : {}), source: "token" };
+  }
+  const parts = text.split(/\s*[|,]\s*|\s*\n\s*|\s+/).filter(Boolean);
+  const token = parts.find((part) => TELEGRAM_TOKEN.test(part));
+  const chatId = parts.find((part) => TELEGRAM_CHAT_ID.test(part));
+  if (token) return { botToken: token, ...(chatId ? { chatId } : {}), source: "token" };
+  if (TELEGRAM_CHAT_ID.test(text)) return { chatId: text, source: "chat-id" };
+  throw new Error("That code doesn't look like Telegram bot details");
+}
+
+
+export async function fetchLatestShardedFullBackup(cfg: TelegramConfig, options: { onProgress?: (p: TelegramRestoreProgress) => void; signal?: AbortSignal } = {}) {
+  return fetchLatestShardedFullBackupImpl(cfg, options);
+}
+
+export async function restoreFullBackupSharded(shards: Uint8Array[] | ShardSource, mode: "replace" | "merge" = "replace", top?: FullBackupTopManifest | null, options: { onProgress?: (p: TelegramRestoreProgress) => void; signal?: AbortSignal } = {}): Promise<RestoreFullBackupResult> {
+  const op = beginOp("telegram-restore", "Restoring Telegram backup shards");
+  try { const result = await withMigrationLock(() => restoreFullBackupShardedImpl(shards, mode, top, options.onProgress, options.signal)); op.finish(result.filesCorrupted.length ? "warning" : "success", "Telegram sharded restore completed", { records: result.rowsRestored, photos: { saved: result.filesRestored, missing: result.filesSkippedUnmatched + result.filesCorrupted.length }, encrypted: true, session: top?.session }); return result; }
+  catch (e) { op.finish("error", "Telegram sharded restore failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) }); throw e; }
+}
+
+
+export async function fetchLatestFullBackupArchive(cfg: TelegramConfig, onProgress?: (p: UploadProgress) => void): Promise<{ session: string; bytes: Uint8Array }> {
+  return fetchLatestFullBackupArchiveImpl(cfg, onProgress);
 }

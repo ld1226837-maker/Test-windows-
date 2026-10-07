@@ -45,6 +45,8 @@ import {
   type ZipSink,
 } from "./stream-zip";
 import { istTimestampKey } from "./utils";
+import { beginOp, errorCodeFor, redact } from "./backup-log";
+import type { OpPhase } from "./operation-progress";
 
 export const BACKUP_TABLES = DATA_TABLES;
 
@@ -229,6 +231,7 @@ export function captureLocalSettings(): Record<string, string | null> {
         !k.startsWith("__telegram_restore__") &&
         !k.startsWith("__telegram_restore_snapshot__") &&
         !k.startsWith("ks:telegram-backup") &&
+        k !== "ks:backup-log" &&
         !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
           k,
         )
@@ -247,7 +250,7 @@ function applyLocalSettings(saved: Record<string, string | null> | undefined) {
     // Telegram routing is device-local: never replace the target chat ID or
     // label during a cross-device restore. Credentials are separately kept
     // in the OS secure store.
-    if (k.startsWith("ks:telegram-backup")) continue;
+    if (k.startsWith("ks:telegram-backup") || k === "ks:backup-log") continue;
     if (v != null) window.localStorage.setItem(k, v);
   }
 }
@@ -531,6 +534,7 @@ async function recoverNativeRestoreJournal(
             k.startsWith("app-") ||
             k.startsWith("sn-")) &&
           !k.startsWith("ks:telegram-backup") &&
+        k !== "ks:backup-log" &&
           !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
             k,
           ) &&
@@ -539,7 +543,7 @@ async function recoverNativeRestoreJournal(
           window.localStorage.removeItem(k);
       }
       for (const [k, v] of Object.entries(settingsToApply)) {
-        if (k.startsWith("ks:telegram-backup")) continue;
+        if (k.startsWith("ks:telegram-backup") || k === "ks:backup-log") continue;
         if (v != null) window.localStorage.setItem(k, v);
         else window.localStorage.removeItem(k);
       }
@@ -551,7 +555,8 @@ async function recoverNativeRestoreJournal(
   await db.app_settings.delete(restoreJournalKey(journal.backupId));
 }
 
-export async function buildBackup(): Promise<BackupFile> {
+export async function buildBackup(onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void): Promise<BackupFile> {
+  onProgress?.({ phase: "preparing" });
   // Capture all IndexedDB metadata in one readonly transaction. The actual
   // photo bytes are read after this snapshot, but their manifest is pinned to
   // this exact DB state and serializeBackupToSink re-checks size/hash before
@@ -707,7 +712,8 @@ export async function buildBackup(): Promise<BackupFile> {
         !key.startsWith("__migration_restore__:") &&
         !key.startsWith("__telegram_restore__") &&
         !key.startsWith("__telegram_restore_snapshot__") &&
-        !key.startsWith("ks:telegram-backup"),
+        !key.startsWith("ks:telegram-backup") &&
+        key !== "ks:backup-log",
     ),
   );
   return {
@@ -830,6 +836,7 @@ export async function streamBackupToDisk(
   backup: BackupFile,
   name: string,
   passphrase: string,
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void,
 ): Promise<string> {
   const {
     appendToAppDocument,
@@ -845,9 +852,11 @@ export async function streamBackupToDisk(
   if (await appDocumentExists(previousPath))
     await removeAppDocument(previousPath);
   let movedPrevious = false;
+  let bytesWritten = 0;
   try {
+    onProgress?.({ phase: "encrypting" });
     const enc = await createChunkedEncryptor(passphrase, {
-      write: (chunk) => appendToAppDocument(tempPath, chunk),
+      write: (chunk) => { bytesWritten += chunk.byteLength; onProgress?.({ phase: "encrypting", bytesDone: bytesWritten }); return appendToAppDocument(tempPath, chunk); },
     });
     await serializeBackupToSink(backup, { write: (chunk) => enc.write(chunk) });
     await enc.finish();
@@ -880,9 +889,10 @@ export async function streamBackupToDisk(
   }
 }
 
-export async function downloadBackup(
+async function downloadBackupImpl(
   backup: BackupFile,
   name = backupFileName(),
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void,
 ): Promise<string | null> {
   if (isDesktop() && !isAndroid() && backup.version >= 3) {
     // R7: stream the v3 container straight to disk - zip writer -> chunked
@@ -895,7 +905,7 @@ export async function downloadBackup(
       const { NoPassphraseSetError } = await import("./backup-crypto");
       throw new NoPassphraseSetError();
     }
-    return streamBackupToDisk(backup, name, passphrase);
+    return streamBackupToDisk(backup, name, passphrase, onProgress);
   }
   if (isAndroid() && backup.version >= 3) {
     const { readBackupPassphrase } = await import("./backup-passphrase");
@@ -910,6 +920,7 @@ export async function downloadBackup(
       "application/octet-stream",
     );
     try {
+      onProgress?.({ phase: "encrypting" });
       const enc = await createChunkedEncryptor(passphrase, {
         write: out.write,
       });
@@ -917,6 +928,7 @@ export async function downloadBackup(
         write: (chunk) => enc.write(chunk),
       });
       await enc.finish();
+      onProgress?.({ phase: "finalizing" });
       const result = await out.finish();
       if (!result.saved)
         throw new Error(
@@ -928,11 +940,13 @@ export async function downloadBackup(
       throw e;
     }
   }
-  const bytes = await encryptFullBackupBytes(
-    await serializeBackupBytes(backup),
-  );
+  onProgress?.({ phase: "compressing" });
+  const plainBytes = await serializeBackupBytes(backup);
+  onProgress?.({ phase: "encrypting", bytesDone: 0, bytesTotal: plainBytes.byteLength });
+  const bytes = await encryptFullBackupBytes(plainBytes);
 
   if (isAndroid()) {
+    onProgress?.({ phase: "writing", bytesDone: 0, bytesTotal: bytes.byteLength });
     const result = await saveExportFile(
       bytes,
       name,
@@ -1049,7 +1063,9 @@ export const LEGACY_BACKUP_MAX_BYTES = 64 * 1024 * 1024;
 export async function decodeBackupBytes(
   bytes: Uint8Array,
   passphraseOverride?: string,
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void,
 ): Promise<string> {
+  onProgress?.({ phase: "reading", bytesDone: 0, bytesTotal: bytes.byteLength });
   const isZipContainer =
     bytes.byteLength >= 4 &&
     bytes[0] === 0x50 &&
@@ -1074,6 +1090,7 @@ export async function decodeBackupBytes(
       "Backup exceeds the supported ZIP32/container size limit; use sharded backup.",
     );
   const plain = await decryptFullBackupBytes(bytes, passphraseOverride);
+  onProgress?.({ phase: "verifying", bytesDone: bytes.byteLength, bytesTotal: bytes.byteLength });
   if (
     plain[0] === 0x50 &&
     plain[1] === 0x4b &&
@@ -1176,7 +1193,7 @@ export async function decodeBackupFile(
         );
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const bytes = await readFile(path);
-      return decodeBackupBytes(bytes, passphraseOverride);
+      return decodeBackupBytes(bytes, passphraseOverride, onProgress);
     }
     const source = {
       async *[Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array> {
@@ -1384,7 +1401,7 @@ export type RestorePreview = {
   photoCount: number;
 };
 
-export async function previewRestore(
+async function previewRestoreImpl(
   backup: BackupFile,
   mode: "replace" | "merge",
 ): Promise<RestorePreview> {
@@ -1797,7 +1814,11 @@ export async function withMigrationLock<T>(fn: () => Promise<T>): Promise<T> {
 export async function restoreBackupImpl(
   backup: BackupFile,
   mode: "replace" | "merge" = "replace",
+  onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; label?: string; cancellable?: boolean }) => void,
+  signal?: AbortSignal,
 ) {
+  if (signal?.aborted) throw new DOMException("The restore was cancelled", "AbortError");
+  onProgress?.({ phase: "verifying", label: "Validating backup", cancellable: true });
   // Capture the photo source before schema normalisation. The source is bound
   // to this exact backup object, so concurrent restores cannot steal it.
   const restorePhotoSource = photoSourceByBackup.get(backup) ?? pendingPhotoZip;
@@ -2542,6 +2563,8 @@ export async function restoreBackupImpl(
     backup.version >= 3 &&
     !restoreOptions.preserveReceiptsDuringRestore;
   try {
+    if (signal?.aborted) throw new DOMException("The restore was cancelled", "AbortError");
+    onProgress?.({ phase: "restoring-records", label: "Restoring records", cancellable: false });
     if (!activeJournal?.metadataApplied)
       await db.transaction(
         "rw",
@@ -2652,6 +2675,7 @@ export async function restoreBackupImpl(
               await target.bulkPut(rows);
               inserted += rows.length;
             }
+            onProgress?.({ phase: "restoring-records", done: BACKUP_TABLES.indexOf(t) + 1, total: BACKUP_TABLES.length, label: `Restoring ${t.replaceAll("_", " ")} (${rows.length.toLocaleString()} rows)` , cancellable: false });
           }
 
           // Native v3 receipts are stored on disk, so Dexie keeps metadata only.
@@ -2753,6 +2777,8 @@ export async function restoreBackupImpl(
   // Dexie metadata transaction, one entry at a time, to avoid transaction
   // auto-commit and to keep peak memory bounded to one photo.
   if (backup.version >= 3 && !isDesktop()) {
+    onProgress?.({ phase: "restoring-photos", done: 0, total: verifiedV3Paths.length, label: `Restoring receipt photos (0/${verifiedV3Paths.length})` });
+    let photoDone = 0;
     for (const entry of verifiedV3Paths) {
       if (activeJournal?.completedPhotos.includes(entry.path)) continue;
       const bytes = photoContainer
@@ -2776,6 +2802,8 @@ export async function restoreBackupImpl(
         activeJournal.completedPhotos.push(entry.path);
         await writeRestoreJournal(activeJournal);
       }
+      photoDone += 1;
+      onProgress?.({ phase: "restoring-photos", done: photoDone, total: verifiedV3Paths.length, label: `Restoring receipt photos (${photoDone}/${verifiedV3Paths.length})` });
     }
   }
 
@@ -2849,6 +2877,7 @@ export async function restoreBackupImpl(
             k.startsWith("app-") ||
             k.startsWith("sn-")) &&
           !k.startsWith("ks:telegram-backup") &&
+        k !== "ks:backup-log" &&
           !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
             k,
           ) &&
@@ -2876,10 +2905,10 @@ export async function restoreBackupImpl(
   return inserted;
 }
 
-export async function restoreBackup(
+async function restoreBackupWithLock(
   backup: BackupFile,
   mode: "replace" | "merge" = "replace",
-  opts: { alreadyLocked?: boolean } = {},
+  opts: { alreadyLocked?: boolean; onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; label?: string; cancellable?: boolean }) => void; signal?: AbortSignal } = {},
 ) {
   let acquired = false;
   // The photo source this restore owns, captured the moment it holds the lock.
@@ -2889,7 +2918,7 @@ export async function restoreBackup(
   const run = async () => {
     acquired = true;
     ownedSource = photoSourceByBackup.get(backup) ?? pendingPhotoZip;
-    return restoreBackupImpl(backup, mode);
+    return restoreBackupImpl(backup, mode, opts.onProgress, opts.signal);
   };
   try {
     return await (opts.alreadyLocked ? run() : withMigrationLock(run));
@@ -2904,4 +2933,25 @@ export async function restoreBackup(
       if (photoSourceByBackup.has(backup)) photoSourceByBackup.delete(backup);
     }
   }
+}
+
+
+// Backup activity observers: these wrappers deliberately sit outside the byte-producing
+// implementations so the encrypted/manifest formats remain unchanged.
+export async function downloadBackup(backup: BackupFile, name = backupFileName(), onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; bytesDone?: number; bytesTotal?: number }) => void): Promise<string | null> {
+  const op = beginOp("local-export", "Saving local backup");
+  try { const result = await downloadBackupImpl(backup, name, onProgress); if (result === null) { op.finish("cancelled", "Local backup export cancelled"); return null; } const missing = backup.warnings?.length ?? 0; op.finish(backup.partial ? "warning" : "success", backup.partial ? "Local backup saved with missing receipt photos" : "Local backup saved", { encrypted: true, ...(backup.partial ? { photos: { saved: Math.max(0, (backup.photo_manifest?.length ?? backup.photos?.length ?? 0) - missing), missing } } : {}) }); return result; }
+  catch (e) { op.finish("error", "Local backup export failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) }); throw e; }
+}
+
+export async function previewRestore(backup: BackupFile, mode: "replace" | "merge"): Promise<RestorePreview> {
+  const op = beginOp("preview", "Previewing local restore");
+  try { const result = await previewRestoreImpl(backup, mode); op.finish("success", "Local restore preview ready", { records: result.totalAdded }); return result; }
+  catch (e) { op.finish("error", "Local restore preview failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) }); throw e; }
+}
+
+export async function restoreBackup(backup: BackupFile, mode: "replace" | "merge" = "replace", opts: { alreadyLocked?: boolean; onProgress?: (progress: { phase: OpPhase; done?: number; total?: number; label?: string; cancellable?: boolean }) => void; signal?: AbortSignal } = {}) {
+  const op = beginOp("local-restore", "Restoring local backup");
+  try { const result = await restoreBackupWithLock(backup, mode, opts); const warning = Boolean(backup.partial || (backup.warnings?.length ?? 0) > 0); op.finish(warning ? "warning" : "success", warning ? "Local restore completed with missing receipt photos" : "Local restore completed", { records: result, encrypted: true, ...(warning ? { photos: { saved: Math.max(0, (backup.photo_manifest?.length ?? backup.photos?.length ?? 0) - (backup.warnings?.length ?? 0)), missing: backup.warnings?.length ?? 0 } } : {}) }); return result; }
+  catch (e) { op.finish("error", "Local restore failed", { errorCode: errorCodeFor(e), errorMessage: redact(e instanceof Error ? e.message : String(e)) }); throw e; }
 }

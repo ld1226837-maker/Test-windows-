@@ -44,10 +44,17 @@ import { BackupEncryptionSettings } from "./BackupEncryptionSettings";
 import { RestorePassphrasePrompt } from "./RestorePassphrasePrompt";
 import {
   useAppSettings,
-  writeAppSettings,
-  readAppSettings,
   type BackupReminder,
 } from "@/lib/settings";
+import { OperationProgressBar } from "./OperationProgressBar";
+import { LayoutPart } from "./LayoutSection";
+import { beginProgress, setOperationProgress, setOperationResult, isOperationRunning } from "@/lib/operation-progress";
+
+const progressLabel = (phase: string, done?: number, total?: number) => {
+  const labels: Record<string, string> = { preparing: "Preparing backup", reading: "Reading backup data", compressing: "Compressing backup", encrypting: "Encrypting backup", uploading: "Uploading backup", downloading: "Downloading backup", verifying: "Verifying backup", writing: "Saving backup", "restoring-records": "Restoring records", "restoring-photos": "Restoring receipt photos", finalizing: "Finalizing backup" };
+  const base = labels[phase] ?? "Processing backup";
+  return done != null && total != null ? `${base} (${done}/${total})` : base;
+};
 
 export function BackupCard() {
   const qc = useQueryClient();
@@ -82,11 +89,15 @@ export function BackupCard() {
   }, []);
 
   const run = async (label: string, fn: () => Promise<void>) => {
+    if (isOperationRunning()) { toast.error("Another backup is in progress"); return; }
     setBusy(label);
     try {
       await fn();
+      setOperationResult("success", `${label === "restore" ? "Restore" : "Backup"} completed`);
     } catch (e) {
-      toast.error(errorMessage(e));
+      const cancelled = e instanceof DOMException && e.name === "AbortError";
+      setOperationResult(cancelled ? "cancelled" : "error", cancelled ? "Restore cancelled" : errorMessage(e));
+      toast.error(cancelled ? "Restore cancelled" : errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -183,7 +194,15 @@ export function BackupCard() {
             "Pre-restore safety backup was cancelled; replace restore was aborted.",
           );
       }
-      const count = await restoreBackup(backup, mode);
+      const opId = crypto.randomUUID();
+      const controller = new AbortController();
+      beginProgress("local-restore", opId, "verifying", "Validating backup", true);
+      setOperationProgress({ opId, kind: "local-restore", phase: "verifying", label: "Validating backup", cancellable: true, cancel: () => controller.abort() });
+      const count = await restoreBackup(backup, mode, {
+        onProgress: (p) => setOperationProgress({ opId, kind: "local-restore", phase: p.phase, label: p.label ?? p.phase, done: p.done, total: p.total, cancellable: p.cancellable ?? false, cancel: p.cancellable ? () => controller.abort() : undefined }),
+        signal: controller.signal,
+      });
+      setOperationResult("success", `Restored ${count} records`);
       await invalidateAllDataQueries(qc);
       const differing = preview.perTable.reduce(
         (n, row) => n + (row.mode === "merge" ? row.differing : 0),
@@ -193,7 +212,9 @@ export function BackupCard() {
         description: `${backupSummary(backup)}${mode === "merge" ? ` · ${differing} existing record${differing === 1 ? "" : "s"} differed and were kept local` : ""}`,
       });
     } catch (e) {
-      toast.error(errorMessage(e));
+      const cancelled = e instanceof DOMException && e.name === "AbortError";
+      setOperationResult(cancelled ? "cancelled" : "error", cancelled ? "Restore cancelled" : errorMessage(e));
+      toast.error(cancelled ? "Restore cancelled" : errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -212,8 +233,24 @@ export function BackupCard() {
     }
   };
 
+  useEffect(() => {
+    const retry = (event: Event) => {
+      const kind = (event as CustomEvent<{ kind?: string }>).detail?.kind;
+      if (kind === "local") void run("backup", async () => {
+        const opId = crypto.randomUUID();
+        beginProgress("local-export", opId, "preparing", "Preparing local backup");
+        const backup = await buildBackup((progress) => setOperationProgress({ opId, kind: "local-export", phase: progress.phase, label: progressLabel(progress.phase, progress.done, progress.total), done: progress.done, total: progress.total, bytesDone: progress.bytesDone, bytesTotal: progress.bytesTotal, cancellable: false }));
+        const savedTo = await downloadBackup(backup, undefined, (progress) => setOperationProgress({ opId, kind: "local-export", phase: progress.phase, label: progressLabel(progress.phase, progress.done, progress.total), done: progress.done, total: progress.total, bytesDone: progress.bytesDone, bytesTotal: progress.bytesTotal, cancellable: false }));
+        if (savedTo === null) throw new DOMException("The backup save was cancelled", "AbortError");
+      });
+    };
+    window.addEventListener("truff-backup-retry", retry);
+    return () => window.removeEventListener("truff-backup-retry", retry);
+  }, []);
+
   return (
     <section className="space-y-3">
+      <LayoutPart id="settings.backup.progress"><OperationProgressBar /></LayoutPart>
       <Card className="frost">
         <CardHeader>
           <CardTitle className="text-base">Single-file backup</CardTitle>
@@ -241,13 +278,12 @@ export function BackupCard() {
               disabled={busy !== null}
               onClick={() =>
                 run("export", async () => {
-                  const backup = await buildBackup();
-                  const savedTo = await downloadBackup(backup);
-                  if (savedTo === null) return; // user cancelled the save dialog
-                  writeAppSettings({
-                    ...readAppSettings(),
-                    lastBackupAt: new Date().toISOString(),
-                  });
+                  const opId = crypto.randomUUID();
+                  beginProgress("local-export", opId, "preparing", "Preparing local backup");
+                  try {
+                  const backup = await buildBackup((p) => setOperationProgress({ opId, kind: "local-export", phase: p.phase, label: progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, cancellable: false }));
+                  const savedTo = await downloadBackup(backup, undefined, (p) => setOperationProgress({ opId, kind: "local-export", phase: p.phase, label: progressLabel(p.phase, p.done, p.total), done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, cancellable: false }));
+                  if (savedTo === null) throw new DOMException("The backup save was cancelled", "AbortError");
                   if (backup.partial) {
                     toast.warning("Backup completed with missing receipts", {
                       description: `${backup.warnings?.length ?? 0} receipt photo(s) were omitted. Repair them before relying on this backup as a complete archive.`,
@@ -260,6 +296,9 @@ export function BackupCard() {
                         description: `${backupSummary(backup)}${savedTo ? ` · ${savedTo}` : ""}`,
                       },
                     );
+                  }
+                  } catch (e) {
+                    throw e;
                   }
                 })
               }

@@ -12,6 +12,7 @@ const COMMANDS: &[&str] = &[
     "append_stream_save",
     "finish_stream_save",
     "abort_stream_save",
+    "request_camera_permission",
 ];
 
 fn main() {

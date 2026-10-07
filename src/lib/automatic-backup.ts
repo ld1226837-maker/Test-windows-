@@ -1,9 +1,9 @@
 import {
   backupReminderDue,
   readAppSettings,
-  writeAppSettings,
 } from "./settings";
 import { readTelegramConfig, uploadShardedFullBackup } from "./telegram-backup";
+import { beginOp, errorCodeFor, redact } from "./backup-log";
 
 let running = false;
 
@@ -13,31 +13,23 @@ let running = false;
  * A failed upload leaves lastBackupAt unchanged so the next launch retries.
  */
 export async function runAutomaticBackupIfDue(): Promise<boolean> {
-  if (running) return false;
+  if (running) { if (import.meta.env.DEV) console.debug("Automatic backup skipped: another run is active"); return false; }
   const settings = readAppSettings();
-  if (!settings.automaticBackup) return false;
-  if (!backupReminderDue(settings)) return false;
+  if (!settings.automaticBackup) { if (import.meta.env.DEV) console.debug("Automatic backup skipped: disabled"); return false; }
+  if (!backupReminderDue(settings)) { if (import.meta.env.DEV) console.debug("Automatic backup skipped: not due"); return false; }
 
   const cfg = await readTelegramConfig();
-  if (!cfg.botToken || !cfg.chatId) return false;
+  if (!cfg.botToken || !cfg.chatId) { if (import.meta.env.DEV) console.debug("Automatic backup skipped: Telegram is not configured"); return false; }
 
   running = true;
+  const op = beginOp("auto-backup", "Automatic Telegram backup");
   try {
-    await uploadShardedFullBackup(cfg, cfg.deviceLabel);
-    writeAppSettings({
-      ...readAppSettings(),
-      lastBackupAt: new Date().toISOString(),
-      lastBackupError: null,
-      lastBackupErrorAt: null,
-    });
+    await uploadShardedFullBackup(cfg, cfg.deviceLabel, undefined, { log: false });
+    op.finish("success", "Automatic backup completed");
     return true;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    writeAppSettings({
-      ...readAppSettings(),
-      lastBackupError: message,
-      lastBackupErrorAt: new Date().toISOString(),
-    });
+    op.finish("error", "Automatic backup failed", { errorCode: errorCodeFor(e), errorMessage: redact(message) });
     throw e;
   } finally {
     running = false;

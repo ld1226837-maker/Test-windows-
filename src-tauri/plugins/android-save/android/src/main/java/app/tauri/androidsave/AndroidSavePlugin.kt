@@ -24,7 +24,10 @@ import androidx.core.content.FileProvider
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import app.tauri.annotation.Command
+import app.tauri.PermissionState
 import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -81,7 +84,11 @@ class SecureKeyArgs {
     lateinit var key: String
 }
 
-@TauriPlugin
+@TauriPlugin(
+    permissions = [
+        Permission(strings = [android.Manifest.permission.CAMERA], alias = "camera")
+    ]
+)
 class AndroidSavePlugin(private val activity: Activity) : Plugin(activity) {
 
     /**
@@ -93,6 +100,26 @@ class AndroidSavePlugin(private val activity: Activity) : Plugin(activity) {
      * API 24-28: legacy direct write to the public Downloads directory.
      */
     /** Removes MediaStore exports left pending by a process death. Only rows owned by this package are touched. */
+    /**
+     * Asks for the CAMERA runtime permission before the WebView's getUserMedia
+     * runs. The manifest entry alone is not enough on API 23+: without a runtime
+     * grant the WebView's permission request is silently denied. Resolves
+     * { granted } instead of rejecting so the scanner can show its own guidance.
+     */
+    @Command
+    fun requestCameraPermission(invoke: Invoke) {
+        if (getPermissionState("camera") == PermissionState.GRANTED) {
+            invoke.resolve(JSObject().put("granted", true))
+        } else {
+            requestPermissionForAlias("camera", invoke, "cameraPermissionResult")
+        }
+    }
+
+    @PermissionCallback
+    fun cameraPermissionResult(invoke: Invoke) {
+        invoke.resolve(JSObject().put("granted", getPermissionState("camera") == PermissionState.GRANTED))
+    }
+
     @Command
     fun cleanupPendingExports(invoke: Invoke) {
         try {

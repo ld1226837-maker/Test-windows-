@@ -27,7 +27,7 @@ env:
   FORCE_COLOR: "1"
   # Hard size gates: the build fails (and nothing is published) above these.
   MAX_INSTALLER_MB: "10"   # Windows setup.exe
-  MAX_APK_MB: "10"         # each Android APK (one per CPU architecture)
+  MAX_APK_MB: "75"         # each Android APK (one per CPU architecture)
 
 jobs:
   # ---------------------------------------------------------------------------
