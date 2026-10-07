@@ -27,6 +27,9 @@ env:
   CI: "true"
   NODE_VERSION: "22"
   FORCE_COLOR: "1"
+  # Hard size gates: the build fails (and nothing is published) above these.
+  MAX_INSTALLER_MB: "10"   # Windows setup.exe
+  MAX_APK_MB: "10"         # each Android APK (one per CPU architecture)
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -113,6 +116,10 @@ jobs:
           mkdir -p .output/public
           echo '<!doctype html><title>ci</title>' > .output/public/index.html
 
+      # NOT "--locked" on purpose: the committed Cargo.lock is behind
+      # Cargo.toml (it lacks keyring and tauri-plugin-android-save). The
+      # drift step below hands you a refreshed lockfile to commit; after
+      # committing it, add --locked back to both commands.
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --all-targets
@@ -120,6 +127,24 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+
+      - name: Detect Cargo.lock drift
+        id: drift
+        run: |
+          if git diff --quiet -- src-tauri/Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::src-tauri/Cargo.lock is out of date. Download the 'Cargo.lock-refreshed' artifact from this run and commit it."
+          fi
+
+      - name: Upload refreshed Cargo.lock
+        if: steps.drift.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cargo.lock-refreshed
+          path: src-tauri/Cargo.lock
+          retention-days: 14
 
       # Advisory only: reported in the log but not a gate. Remove
       # "continue-on-error" once the Rust code is clean under both.
@@ -177,7 +202,27 @@ jobs:
           ls -l
           sha256sum *.exe > SHA256SUMS.txt
 
+      - name: Installer size report and gate
+        run: |
+          set -uo pipefail
+          APP=$(find src-tauri/target/release -maxdepth 1 -name '*.exe' | head -n1)
+          fail=0
+          { echo "### Windows sizes (limit ${MAX_INSTALLER_MB} MB installer)"; echo; echo "| file | MB |"; echo "|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          for f in "$APP" dist/*.exe; do
+            bytes=$(stat -c%s "$f")
+            mb=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1048576}')
+            echo "$(basename "$f"): ${mb} MB"
+            echo "| $(basename "$f") | ${mb} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          bytes=$(stat -c%s dist/*.exe)
+          if [ "$bytes" -gt $((MAX_INSTALLER_MB * 1048576)) ]; then
+            echo "::error::Installer is $((bytes / 1048576)) MB, above the ${MAX_INSTALLER_MB} MB limit. Check webviewInstallMode in tauri.conf.json (offlineInstaller embeds ~180 MB)."
+            fail=1
+          fi
+          exit $fail
+
       - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('dist/*') != ''
         with:
           name: windows-installer
           path: dist/*

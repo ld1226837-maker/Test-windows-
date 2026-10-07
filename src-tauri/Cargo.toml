@@ -35,7 +35,7 @@ keyring = "2"
 panic = "abort"
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = "z"
 strip = true
 
 # The Android CI workflow builds `--debug` (no release keystore configured
