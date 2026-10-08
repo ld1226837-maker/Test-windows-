@@ -1793,7 +1793,10 @@ export function telegramErrorMessage(status: number, body: unknown): string {
     return "The bot can't post in that chat. Add it to the channel/group and make it an admin that can post messages.";
   if (status === 400 && /chat not found/i.test(description))
     return "Telegram couldn't find that chat ID. Check the chat ID in the setup fields.";
-  if (status === 400 && /message to (forward|copy) not found|message_id_invalid/i.test(description))
+  if (
+    status === 400 &&
+    /message to (forward|copy) not found|message_id_invalid/i.test(description)
+  )
     return BACKUP_MESSAGE_MISSING;
   return `Telegram refused the request: ${description}`;
 }
@@ -2380,7 +2383,8 @@ function forgetUploadSession(session: string): void {
     const left = readUploadHistory().filter((h) => h?.session !== session);
     window.localStorage.setItem(LAST_UPLOAD_HISTORY_KEY, JSON.stringify(left));
     const last = readLastUpload();
-    if (last?.session === session) window.localStorage.removeItem(LAST_UPLOAD_KEY);
+    if (last?.session === session)
+      window.localStorage.removeItem(LAST_UPLOAD_KEY);
   } catch {
     /* ignore */
   }
@@ -2499,7 +2503,11 @@ export async function readBackupMessage(
         }).catch(() => {});
       const doc = fwd?.document;
       if (doc?.file_id && doc.file_name)
-        return { fileId: doc.file_id, fileName: doc.file_name, botToken: token };
+        return {
+          fileId: doc.file_id,
+          fileName: doc.file_name,
+          botToken: token,
+        };
       return null; // message exists but isn't a backup file
     } catch (e) {
       if ((e as Error)?.name === "AbortError") throw e;
@@ -3610,7 +3618,7 @@ export async function fetchShardedFullBackupByMessage(
     const token = tokens[botIndex]!;
     try {
       const fwd = await readBackupMessage(
-        { ...cfg, extraBotTokens: [] , botToken: token },
+        { ...cfg, extraBotTokens: [], botToken: token },
         messageId,
         token,
         options.signal,

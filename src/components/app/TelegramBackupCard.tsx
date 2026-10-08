@@ -1016,7 +1016,9 @@ export function TelegramBackupCard() {
                     forgetAllTelegramPointers();
                     setRecent(null);
                     setMessageLocator("");
-                    toast.success("Telegram backup links reset. Tap 'Backup now' to make a new backup.");
+                    toast.success(
+                      "Telegram backup links reset. Tap 'Backup now' to make a new backup.",
+                    );
                   }}
                 >
                   Reset Telegram backup links

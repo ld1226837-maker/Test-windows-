@@ -1333,15 +1333,28 @@ describe("Telegram migration hardening", () => {
 describe("missing Telegram backup message", () => {
   it("turns 'message to forward not found' into plain advice", () => {
     expect(
-      telegramErrorMessage(400, { description: "Bad Request: message to forward not found" }),
+      telegramErrorMessage(400, {
+        description: "Bad Request: message to forward not found",
+      }),
     ).toBe(BACKUP_MESSAGE_MISSING);
   });
   it("ignores remembered parts from a different chat", () => {
-    const last = { session: "s", total: 1, messageIds: [5], chatId: "111", at: "" };
+    const last = {
+      session: "s",
+      total: 1,
+      messageIds: [5],
+      chatId: "111",
+      at: "",
+    };
     expect(lastUploadForChat(last, "222")).toBeNull();
     expect(lastUploadForChat(last, "111")).toBe(last);
   });
   it("ignores an incomplete remembered upload", () => {
-    expect(lastUploadForChat({ session: "s", total: 2, messageIds: [5], at: "" }, "1")).toBeNull();
+    expect(
+      lastUploadForChat(
+        { session: "s", total: 2, messageIds: [5], at: "" },
+        "1",
+      ),
+    ).toBeNull();
   });
 });
