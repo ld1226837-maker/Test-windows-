@@ -37,6 +37,8 @@ jobs:
     name: Typecheck, lint, test, build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write   # only used to commit auto-fixed formatting on pushes to main
     steps:
       - uses: actions/checkout@v6
 
@@ -59,6 +61,17 @@ jobs:
 
       - name: Typecheck (app + scripts)
         run: npm run typecheck:all
+
+      - name: Auto-fix formatting (Prettier via ESLint) and commit
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          npx eslint . --fix || true
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "style: auto-fix formatting [skip ci]"
+            git push
+          fi
 
       - name: Lint (ESLint + Prettier)
         run: npm run lint
