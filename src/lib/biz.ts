@@ -1,3 +1,4 @@
+import { waMeUrl } from "./phone";
 import { money, rupees } from "./money";
 import { storedTurfAmount } from "@/lib/courts";
 import { readAppSettings, taxBreakdown } from "./settings";
@@ -215,10 +216,9 @@ export function billText(bill: Bill) {
 }
 
 export function whatsappUrl(text: string, phone?: string | null) {
-  const digits = (phone ?? "").replace(/\D/g, "");
-  const to =
-    digits.length >= 10 ? (digits.length === 10 ? `91${digits}` : digits) : "";
-  return `https://wa.me/${to}?text=${encodeURIComponent(text)}`;
+  // Indian-aware: 10-digit / 0-prefixed / +91 numbers all become 91XXXXXXXXXX.
+  // No usable mobile -> generic wa.me share (the user picks the contact).
+  return waMeUrl(phone, text);
 }
 
 export async function copyText(text: string) {

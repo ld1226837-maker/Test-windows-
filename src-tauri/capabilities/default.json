@@ -31,9 +31,12 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        {
-          "url": "https://wa.me/**"
-        },
+        { "url": "https://wa.me/**" },
+        { "url": "https://wa.me/*" },
+        { "url": "https://api.whatsapp.com/**" },
+        { "url": "tel:*" },
+        { "url": "sms:*" },
+        { "url": "mailto:*" },
         {
           "url": "upi://**"
         }

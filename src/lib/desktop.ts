@@ -55,19 +55,32 @@ export function isAndroid(): boolean {
  * src-tauri/capabilities/default.json, scoped to https/http links only).
  */
 export async function openExternal(url: string): Promise<boolean> {
+  const isWeb = /^https?:/i.test(url);
   if (!isDesktop()) {
-    window.open(url, "_blank", "noopener");
-    return true;
+    // Browser/PWA: tel:/sms: go through location, http(s) opens a tab.
+    try {
+      if (isWeb) window.open(url, "_blank", "noopener");
+      else window.location.href = url;
+      return true;
+    } catch {
+      return false;
+    }
   }
   try {
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);
     return true;
-  } catch {
-    try {
-      window.open(url, "_blank");
-    } catch {
-      /* nothing else we can do */
+  } catch (e) {
+    // Most likely cause: the scheme isn't allowed in
+    // src-tauri/capabilities/default.json (opener:allow-open-url) or no app
+    // handles it. Surfaced in the console so it is diagnosable.
+    console.error("openExternal failed for", url.split("?")[0], e);
+    if (isWeb) {
+      try {
+        window.open(url, "_blank");
+      } catch {
+        /* nothing else we can do */
+      }
     }
     return false;
   }

@@ -59,7 +59,7 @@ import {
 } from "@/lib/biz";
 import { billDue, bookingDue } from "@/lib/dues";
 import { useTabEntries } from "@/lib/tabs";
-import { openExternal } from "@/lib/desktop";
+import { openWhatsApp } from "@/lib/contact";
 import { cn, errorMessage } from "@/lib/utils";
 import {
   LayoutSection,
@@ -748,7 +748,7 @@ export function DashboardTab() {
       return;
     }
     const text = `Hi ${row.label}, a friendly reminder that ${money(row.due)} is pending for ${row.sub}. Please pay at your convenience — thank you!`;
-    void openExternal(whatsappUrl(text, row.phone));
+    void openWhatsApp(row.phone, text);
   };
 
   const supportingCards = [

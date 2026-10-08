@@ -17,9 +17,9 @@ import {
   customerTag,
   formatDMY,
   money,
-  whatsappUrl,
 } from "@/lib/biz";
 import { useBills, matchesCustomer, useCustomers } from "@/lib/data";
+import { callNumber, openWhatsApp } from "@/lib/contact";
 import { useCollectBillPayment, useCollectBookingPayment } from "@/lib/collect";
 import { useSnackSales, useTurfBookings } from "@/lib/ops";
 import { isFinancialBooking } from "@/lib/analytics";
@@ -542,25 +542,27 @@ export function CustomerDetailContent({
 
       {phone && (
         <div className="flex gap-2">
-          <Button variant="outline" className="h-12 flex-1" asChild>
-            <a href={`tel:${phone}`}>
-              <Phone className="mr-1 size-4" /> Call
-            </a>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-12 flex-1"
+            onClick={() => void callNumber(phone)}
+          >
+            <Phone className="mr-1 size-4" /> Call
           </Button>
-          <Button className="h-12 flex-1" asChild>
-            <a
-              href={whatsappUrl(
+          <Button
+            type="button"
+            className="h-12 flex-1"
+            onClick={() =>
+              void openWhatsApp(
+                phone,
                 data.dues.total > 0
                   ? `Hi ${name}, your pending balance is ${money(data.dues.total)}. Thank you!`
                   : `Hi ${name}, thanks for visiting!`,
-
-                phone,
-              )}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <MessageCircle className="mr-1 size-4" /> WhatsApp
-            </a>
+              )
+            }
+          >
+            <MessageCircle className="mr-1 size-4" /> WhatsApp
           </Button>
         </div>
       )}

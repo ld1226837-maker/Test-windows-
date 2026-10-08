@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <!-- Only needed on Android 9 and older; API 29+ writes through MediaStore,
          which requires no runtime permission at all. -->
     <uses-permission
@@ -24,6 +27,27 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="content" />
         </intent>
+        <!-- Call / WhatsApp buttons: tel: dialer, SMS, https (wa.me opens in
+             WhatsApp or the browser) and both WhatsApp apps. Indian shops
+             commonly run WhatsApp Business (com.whatsapp.w4b) only. -->
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
     </queries>
 
 

@@ -15,18 +15,14 @@ import {
   type TabEntry,
 } from "./tabs";
 import { errorMessage } from "@/lib/utils";
+import { telUrl, waMeUrl, whatsappNumber } from "./phone";
 
 export function customerCallUrl(phone?: string | null) {
-  const digits = (phone ?? "").replace(/\D/g, "");
-  if (digits.length < 10) return null;
-  return `tel:${digits}`;
+  return telUrl(phone);
 }
 
 export function customerWhatsappUrl(phone?: string | null) {
-  const digits = (phone ?? "").replace(/\D/g, "");
-  if (digits.length < 10) return null;
-  const normalized = digits.length === 10 ? `91${digits}` : digits;
-  return `https://wa.me/${normalized}`;
+  return whatsappNumber(phone) ? waMeUrl(phone) : null;
 }
 
 /**

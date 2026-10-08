@@ -49,7 +49,7 @@ import {
 } from "@/lib/teams";
 import { initialsOf } from "@/lib/team-players";
 import { customerCallUrl, customerWhatsappUrl } from "@/lib/customer-actions";
-import { openExternal } from "@/lib/desktop";
+import { callNumber, openWhatsApp } from "@/lib/contact";
 import { compareBy, useSortState, type SortOption } from "@/lib/sort";
 import { comparePhoneForSort } from "@/lib/phone-sort";
 import { PastePlayersDialog, PlayerDialog, TeamDialog } from "./TeamDialogs";
@@ -116,7 +116,7 @@ function PlayerRow({
           variant="ghost"
           className={ICONBTN}
           aria-label={`Call ${p.name}`}
-          onClick={() => void openExternal(call)}
+          onClick={() => void callNumber(p.phone)}
         >
           <Phone className="size-4" />
         </Button>
@@ -127,7 +127,7 @@ function PlayerRow({
           variant="ghost"
           className={ICONBTN}
           aria-label={`WhatsApp ${p.name}`}
-          onClick={() => void openExternal(wa)}
+          onClick={() => void openWhatsApp(p.phone)}
         >
           <MessageCircle className="size-4" />
         </Button>
