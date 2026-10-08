@@ -86,6 +86,7 @@ import {
 } from "./SettingsField";
 import { BackupEncryptionSettings } from "./BackupEncryptionSettings";
 import { RestorePassphrasePrompt } from "./RestorePassphrasePrompt";
+import { reloadIfSettingsRestored } from "@/lib/backup";
 import { TABLE_LABELS } from "@/lib/backup-table-labels";
 import { QrScannerDialog } from "./QrScannerDialog";
 import { LayoutPart } from "./LayoutSection";
@@ -158,6 +159,8 @@ export function TelegramBackupCard() {
   // Set when a Telegram "Restore latest" / "Restore selected" needs the
   // passphrase the backup was made with (e.g. after reinstalling the app).
   const [tgPrompt, setTgPrompt] = useState<"latest" | "message" | null>(null);
+  // Inline "wrong passphrase" message shown inside the passphrase pop-up.
+  const [promptError, setPromptError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -194,11 +197,7 @@ export function TelegramBackupCard() {
       await fn();
       succeeded = true;
     } catch (e) {
-      if (
-        (e instanceof WrongPassphraseError ||
-          e instanceof NoPassphraseSetError) &&
-        label.startsWith("fetch")
-      ) {
+      if (isPassphraseFailure(e) && label.startsWith("fetch")) {
         // First attempt used this device's saved passphrase (or none, after a
         // reinstall). Ask for the one the backup was made with.
         setOperationResult("error", "Backup passphrase needed");
@@ -207,11 +206,8 @@ export function TelegramBackupCard() {
         setProgress(null);
         return;
       }
-      if (
-        (e instanceof WrongPassphraseError ||
-          e instanceof NoPassphraseSetError) &&
-        label.startsWith("unlock-")
-      ) {
+      if (isPassphraseFailure(e) && label.startsWith("unlock")) {
+        setPromptError("Wrong passphrase. Check it and try again.");
         setOperationResult("error", "That passphrase didn't open this backup");
         toast.error("That passphrase didn't open this backup. Try again.");
         setBusy(null);
@@ -236,13 +232,15 @@ export function TelegramBackupCard() {
             ? "Telegram backup completed"
             : label === "fetch"
               ? "Telegram restore completed"
-              : label === "fetch-message"
-                ? "Selected Telegram restore completed"
-                : label === "local-save"
-                  ? "Local backup saved"
-                  : label === "scan-save"
-                    ? "Telegram details saved"
-                    : "Operation completed",
+              : label === "unlock-latest"
+                ? "Telegram restore completed"
+                : label === "fetch-message" || label === "unlock-message"
+                  ? "Selected Telegram restore completed"
+                  : label === "local-save"
+                    ? "Local backup saved"
+                    : label === "scan-save"
+                      ? "Telegram details saved"
+                      : "Operation completed",
         );
       setBusy(null);
       setProgress(null);
@@ -273,21 +271,25 @@ export function TelegramBackupCard() {
     from: string,
     passphraseOverride?: string,
   ) => {
+    if (!passphraseOverride) {
+      // Always ask: the restore reads the passphrase the user types.
+      setPromptError(null);
+      setPassphrasePrompt({ bytes, from });
+      return;
+    }
     try {
       const mode = merge ? "merge" : "replace";
       const preview = await previewFullBackup(bytes, mode, passphraseOverride);
       setPassphrasePrompt(null);
+      setPromptError(null);
       setPending({ bytes, from, mode, preview, passphraseOverride });
     } catch (e) {
       if (
         e instanceof WrongPassphraseError ||
         e instanceof NoPassphraseSetError
       ) {
-        if (passphraseOverride) {
-          toast.error("That passphrase didn't open this file. Try again.");
-          return;
-        }
-        setPassphrasePrompt({ bytes, from });
+        setPromptError("Wrong passphrase. Check it and try again.");
+        toast.error("That passphrase didn't open this file. Try again.");
         return;
       }
       throw e;
@@ -295,6 +297,7 @@ export function TelegramBackupCard() {
   };
 
   const submitUnlock = (passphrase: string) => {
+    setPromptError(null);
     if (tgPrompt === "latest") {
       void restoreLatest(passphrase);
       return;
@@ -320,6 +323,8 @@ export function TelegramBackupCard() {
         job.passphraseOverride,
       );
       await invalidateAllDataQueries(qc);
+      if (reloadIfSettingsRestored())
+        toast.info("Restoring your settings — the app will refresh");
       toast.success(`Restored from ${job.from}`, {
         description: restoreSummary(result),
       });
@@ -402,14 +407,31 @@ export function TelegramBackupCard() {
    * this install had no passphrase saved (fresh reinstall), keep the one that
    * just worked so the next backup from this device uses the same key. */
   const finishTelegramUnlock = async (passphrase?: string) => {
-    if (!passphrase) return;
     setTgPrompt(null);
+    setPromptError(null);
+    if (!passphrase) return;
     try {
       if (!(await readBackupPassphrase()))
         await writeBackupPassphrase(passphrase);
     } catch {
       /* best-effort: the restore itself already succeeded */
     }
+  };
+
+  /** Telegram restores always start by asking for the backup passphrase. */
+  const askPassphraseFor = (which: "latest" | "message") => {
+    if (isOperationRunning() || busy !== null) {
+      toast.error("Another backup is in progress");
+      return;
+    }
+    if (which === "message" && !messageLocator.trim()) {
+      toast.error(
+        "Enter a Telegram backup message ID or copied Telegram message link first.",
+      );
+      return;
+    }
+    setPromptError(null);
+    setTgPrompt(which);
   };
 
   const restoreLatest = (passphrase?: string) =>
@@ -461,6 +483,8 @@ export function TelegramBackupCard() {
       );
       await finishTelegramUnlock(passphrase);
       await invalidateAllDataQueries(qc);
+      if (reloadIfSettingsRestored())
+        toast.info("Restoring your settings — the app will refresh");
       toast.success("Restored from Telegram", {
         description: restoreSummary(result),
       });
@@ -523,6 +547,8 @@ export function TelegramBackupCard() {
       );
       await finishTelegramUnlock(passphrase);
       await invalidateAllDataQueries(qc);
+      if (reloadIfSettingsRestored())
+        toast.info("Restoring your settings — the app will refresh");
       toast.success("Restored selected Telegram backup", {
         description: restoreSummary(result),
       });
@@ -907,7 +933,7 @@ export function TelegramBackupCard() {
                 <Button
                   variant="outline"
                   disabled={busy !== null}
-                  onClick={() => void restoreLatest()}
+                  onClick={() => askPassphraseFor("latest")}
                 >
                   <CloudDownload className="mr-1 h-4 w-4" /> Restore latest
                 </Button>
@@ -922,7 +948,7 @@ export function TelegramBackupCard() {
                   <Button
                     variant="outline"
                     disabled={busy !== null || !messageLocator.trim()}
-                    onClick={() => void restoreByMessage()}
+                    onClick={() => askPassphraseFor("message")}
                   >
                     Restore selected
                   </Button>
@@ -1226,12 +1252,22 @@ export function TelegramBackupCard() {
       <RestorePassphrasePrompt
         open={passphrasePrompt !== null || tgPrompt !== null}
         busy={busy === "unlock" || (busy?.startsWith("unlock-") ?? false)}
+        error={promptError}
         onCancel={() => {
           setPassphrasePrompt(null);
           setTgPrompt(null);
+          setPromptError(null);
         }}
         onSubmit={submitUnlock}
       />
     </section>
   );
+}
+
+/** Wrong/missing passphrase, including errors wrapped by shard restore. */
+function isPassphraseFailure(e: unknown): boolean {
+  if (e instanceof WrongPassphraseError || e instanceof NoPassphraseSetError)
+    return true;
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return /passphrase|decrypt|OperationError|authentication tag/i.test(msg);
 }

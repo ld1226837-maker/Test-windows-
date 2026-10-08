@@ -341,6 +341,20 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
       p("surface.booking-extras.actions", "Clear & apply", "action", true),
     ],
   },
+  {
+    surfaceId: "surface.restore-passphrase",
+    label: "Backup passphrase pop-up",
+    parts: [
+      p("surface.restore-passphrase.explainer", "Explanation text", "summary"),
+      p("surface.restore-passphrase.input", "Passphrase box", "field", true),
+      p(
+        "surface.restore-passphrase.actions",
+        "Cancel & unlock",
+        "action",
+        true,
+      ),
+    ],
+  },
 ];
 
 export function surfaceDef(surfaceId: string): SurfaceDef | undefined {

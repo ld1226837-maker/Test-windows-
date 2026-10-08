@@ -32,6 +32,7 @@ import {
   type BackupFile,
   type BackupTable,
   type RestorePreview,
+  reloadIfSettingsRestored,
 } from "@/lib/backup";
 import { isAndroid, isDesktop } from "@/lib/desktop";
 import { TABLE_LABELS } from "@/lib/backup-table-labels";
@@ -250,6 +251,8 @@ export function BackupCard() {
       });
       setOperationResult("success", `Restored ${count} records`);
       await invalidateAllDataQueries(qc);
+      if (reloadIfSettingsRestored())
+        toast.info("Restoring your settings — the app will refresh");
       const differing = preview.perTable.reduce(
         (n, row) => n + (row.mode === "merge" ? row.differing : 0),
         0,

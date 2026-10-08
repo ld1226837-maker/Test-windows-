@@ -400,7 +400,7 @@ describe("r17 migration regressions", () => {
     expect(rows[0]!.name).toBe("Existing");
   });
 
-  it("does not apply imported local settings during merge", async () => {
+  it("restores user settings (print, UPI, layout, theme) during merge too", async () => {
     window.localStorage.setItem("ks:probe-setting", "local");
     const incoming: BackupFile = {
       format: "turf-snack-ledger",
@@ -412,7 +412,7 @@ describe("r17 migration regressions", () => {
       localSettings: { "ks:probe-setting": "imported" },
     };
     await restoreBackup(incoming, "merge");
-    expect(window.localStorage.getItem("ks:probe-setting")).toBe("local");
+    expect(window.localStorage.getItem("ks:probe-setting")).toBe("imported");
     window.localStorage.removeItem("ks:probe-setting");
   });
 
@@ -423,6 +423,32 @@ describe("r17 migration regressions", () => {
     const { isSafeReceiptPath } = await import("./backup-validate");
     expect(isSafeReceiptPath("Receipts/2026-10-02/ok.jpg")).toBe(true);
     expect(isSafeReceiptPath("../escape.jpg")).toBe(false);
+  });
+});
+
+describe("user settings in backups", () => {
+  it("captures layout, theme, print, app/UPI settings and first-run keys but never secrets", async () => {
+    const { captureLocalSettings } = await import("./backup");
+    const keys = {
+      "ks:layout-active": "L",
+      "app-theme-mode": "dark",
+      "ks:print-settings": "P",
+      "ks:app-settings": "U",
+      "first-run-checklist-done": "1",
+      "ks:backup-passphrase": "secret",
+      "ks:telegram-backup-token": "tok",
+    };
+    for (const [k, v] of Object.entries(keys))
+      window.localStorage.setItem(k, v);
+    const got = captureLocalSettings();
+    expect(got["ks:layout-active"]).toBe("L");
+    expect(got["app-theme-mode"]).toBe("dark");
+    expect(got["ks:print-settings"]).toBe("P");
+    expect(got["ks:app-settings"]).toBe("U");
+    expect(got["first-run-checklist-done"]).toBe("1");
+    expect(got["ks:backup-passphrase"]).toBeUndefined();
+    expect(got["ks:telegram-backup-token"]).toBeUndefined();
+    for (const k of Object.keys(keys)) window.localStorage.removeItem(k);
   });
 });
 

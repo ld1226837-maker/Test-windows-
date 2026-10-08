@@ -522,25 +522,9 @@ export async function buildFullBackup(
     theme[k] =
       typeof window === "undefined" ? null : window.localStorage.getItem(k);
   const layout: FullBackup["layout"] = {};
-  const localSettings: FullBackup["localSettings"] = {};
-  try {
-    for (const k of Object.keys(window.localStorage)) {
-      if (
-        (k.startsWith("ks:") || k.startsWith("app-") || k.startsWith("sn-")) &&
-        !k.startsWith("__migration_imported__:") &&
-        !k.startsWith("__migration_restore__:") &&
-        !k.startsWith("__telegram_restore__") &&
-        !k.startsWith("__telegram_restore_snapshot__") &&
-        !k.startsWith("ks:telegram-backup") &&
-        !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
-          k,
-        )
-      )
-        localSettings[k] = window.localStorage.getItem(k);
-    }
-  } catch {
-    /* localStorage unavailable in non-DOM env */
-  }
+  // Same filter as the single-file backup, so both carry every user setting.
+  const localSettings: FullBackup["localSettings"] =
+    typeof window === "undefined" ? {} : captureLocalSettings();
   for (const k of [
     "ks:layout-active",
     "ks:layout-presets",

@@ -219,13 +219,26 @@ function applyThemeLayout(
 /** Snapshot / restore ALL localStorage settings (print, business ops,
  * app settings, step settings) so the backup holds everything, not just
  * IndexedDB tables + theme/layout. */
+/** Every user-setting key family: layout arrangement, theme, print, UPI /
+ * app settings, sort + UI prefs, first-run checklist, seed markers. */
+const PORTABLE_SETTING_PREFIXES = [
+  "ks:",
+  "app-",
+  "sn-",
+  "first-run-",
+  "truff:",
+];
+function isPortableSettingKey(k: string): boolean {
+  return PORTABLE_SETTING_PREFIXES.some((p) => k.startsWith(p));
+}
+
 export function captureLocalSettings(): Record<string, string | null> {
   const out: Record<string, string | null> = {};
   try {
     const keys = Object.keys(window.localStorage);
     for (const k of keys) {
       if (
-        (k.startsWith("ks:") || k.startsWith("app-") || k.startsWith("sn-")) &&
+        isPortableSettingKey(k) &&
         !k.startsWith("__migration_imported__:") &&
         !k.startsWith("__migration_restore__:") &&
         !k.startsWith("__telegram_restore__") &&
@@ -251,8 +264,26 @@ function applyLocalSettings(saved: Record<string, string | null> | undefined) {
     // label during a cross-device restore. Credentials are separately kept
     // in the OS secure store.
     if (k.startsWith("ks:telegram-backup") || k === "ks:backup-log") continue;
+    if (/(token|passphrase|password|secret|api[-_]?key|credential)/i.test(k))
+      continue;
     if (v != null) window.localStorage.setItem(k, v);
   }
+  settingsRestoredPending = true;
+}
+
+/** True after a restore wrote settings that the running screens cached. */
+let settingsRestoredPending = false;
+
+/**
+ * Settings (theme, layout arrangement, print, UPI, app settings…) are read
+ * once and cached by many screens. After a restore wrote them, reload the
+ * app so every screen picks up the restored values.
+ */
+export function reloadIfSettingsRestored(delayMs = 1200): boolean {
+  if (!settingsRestoredPending || typeof window === "undefined") return false;
+  settingsRestoredPending = false;
+  window.setTimeout(() => window.location.reload(), delayMs);
+  return true;
 }
 
 /**
@@ -530,9 +561,7 @@ async function recoverNativeRestoreJournal(
     try {
       for (const k of Object.keys(window.localStorage)) {
         if (
-          (k.startsWith("ks:") ||
-            k.startsWith("app-") ||
-            k.startsWith("sn-")) &&
+          isPortableSettingKey(k) &&
           !k.startsWith("ks:telegram-backup") &&
           k !== "ks:backup-log" &&
           !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
@@ -2936,10 +2965,9 @@ export async function restoreBackupImpl(
       // journal for the next restore/startup cleanup pass.
     }
   }
-  // Theme/layout are part of the portable profile. In merge mode, however,
-  // existing device preferences must remain untouched; only replace restores
-  // replace the target profile with the backup profile.
-  if (mode === "replace") applyThemeLayout(backup.theme, backup.layout);
+  // Theme/layout and every other user setting are part of the backup and are
+  // restored in BOTH modes (merge adds records; settings still come back).
+  applyThemeLayout(backup.theme, backup.layout);
   if (backupId) {
     const completed = activeJournal ?? {
       backupId,
@@ -2963,9 +2991,7 @@ export async function restoreBackupImpl(
     try {
       for (const k of Object.keys(window.localStorage)) {
         if (
-          (k.startsWith("ks:") ||
-            k.startsWith("app-") ||
-            k.startsWith("sn-")) &&
+          isPortableSettingKey(k) &&
           !k.startsWith("ks:telegram-backup") &&
           k !== "ks:backup-log" &&
           !/(token|passphrase|password|secret|api[-_]?key|credential|private[-_]?key|access[-_]?key)/i.test(
@@ -2979,7 +3005,8 @@ export async function restoreBackupImpl(
       /* best-effort: failure here is non-fatal */
     }
   }
-  if (mode === "replace") applyLocalSettings(backup.localSettings);
+  applyLocalSettings(backup.localSettings);
+  if (backup.theme || backup.layout) settingsRestoredPending = true;
 
   // Older backups/imports may predate investment bill numbers. Backfill
   // deterministically before rebuilding derived counters; existing numbers
