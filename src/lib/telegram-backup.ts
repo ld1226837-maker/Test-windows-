@@ -4850,7 +4850,9 @@ export const RECENT_BACKUPS_SHOWN = 5;
 
 /** Turns a session id like 2026-10-08T07-09-48-851Z back into an ISO date. */
 export function sessionToIso(session: string): string | null {
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(session);
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(
+    session,
+  );
   if (!m) return null;
   return `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`;
 }
@@ -4906,15 +4908,14 @@ export async function listRecentTelegramBackups(
   for (const token of tokens) {
     // 2. The pinned backup (always the newest successful upload).
     try {
-      const chat = await callApi<{ pinned_message?: TelegramUpdate["message"] }>(
-        token,
-        "getChat",
-        { chat_id: cfg.chatId },
-        { signal: options.signal },
-      );
+      const chat = await callApi<{
+        pinned_message?: TelegramUpdate["message"];
+      }>(token, "getChat", { chat_id: cfg.chatId }, { signal: options.signal });
       reached = true;
       const doc = chat.pinned_message?.document;
-      const parsed = doc?.file_name ? parseShardedManifestName(doc.file_name) : null;
+      const parsed = doc?.file_name
+        ? parseShardedManifestName(doc.file_name)
+        : null;
       if (parsed) add(parsed.session, chat.pinned_message?.message_id);
     } catch (e) {
       lastError = e;

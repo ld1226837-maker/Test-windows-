@@ -22,6 +22,8 @@ describe("recent Telegram backups", () => {
     expect(pickRecentBackups([b(s, 5), b(s, 5)])).toHaveLength(1);
   });
   it("reads the backup time from its name", () => {
-    expect(sessionToIso("2026-10-08T07-09-48-851Z")).toBe("2026-10-08T07:09:48.851Z");
+    expect(sessionToIso("2026-10-08T07-09-48-851Z")).toBe(
+      "2026-10-08T07:09:48.851Z",
+    );
   });
 });

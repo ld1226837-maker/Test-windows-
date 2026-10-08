@@ -989,7 +989,10 @@ export function TelegramBackupCard() {
                   {recentLoading ? "Loading backups…" : "Last 5 backups"}
                 </Button>
                 {recent !== null && (
-                  <div className="w-full space-y-2" aria-label="Last 5 Telegram backups">
+                  <div
+                    className="w-full space-y-2"
+                    aria-label="Last 5 Telegram backups"
+                  >
                     {recent.length === 0 ? (
                       <p className="text-sm text-muted-foreground">
                         No backups found in this Telegram chat yet.
