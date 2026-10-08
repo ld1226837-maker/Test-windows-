@@ -47,7 +47,8 @@ export function PaymentSplitCard({
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie isAnimationActive={false}
+                    <Pie
+                      isAnimationActive={false}
                       data={data}
                       dataKey="value"
                       nameKey="name"

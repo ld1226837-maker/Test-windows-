@@ -1906,7 +1906,8 @@ export function ReportsTab() {
                         }
                       />
                       <Legend />
-                      <Bar isAnimationActive={false}
+                      <Bar
+                        isAnimationActive={false}
                         yAxisId="money"
                         dataKey="Bills"
                         name="Bills"
@@ -1914,7 +1915,8 @@ export function ReportsTab() {
                         fill="var(--chart-4)"
                         radius={0}
                       />
-                      <Bar isAnimationActive={false}
+                      <Bar
+                        isAnimationActive={false}
                         yAxisId="money"
                         dataKey="Turf"
                         name="Turf"
@@ -1922,7 +1924,8 @@ export function ReportsTab() {
                         fill="var(--chart-1)"
                         radius={0}
                       />
-                      <Bar isAnimationActive={false}
+                      <Bar
+                        isAnimationActive={false}
                         yAxisId="money"
                         dataKey="Snacks"
                         name="Snacks"
@@ -1930,7 +1933,8 @@ export function ReportsTab() {
                         fill="var(--chart-2)"
                         radius={4}
                       />
-                      <Line isAnimationActive={false}
+                      <Line
+                        isAnimationActive={false}
                         yAxisId="pct"
                         type="monotone"
                         dataKey="Margin"
@@ -1963,7 +1967,8 @@ export function ReportsTab() {
                         tickFormatter={moneyAxis}
                       />
                       <Tooltip formatter={(v: number) => money(v)} />
-                      <Bar isAnimationActive={false}
+                      <Bar
+                        isAnimationActive={false}
                         dataKey="Expenses"
                         fill="var(--chart-3)"
                         radius={4}
@@ -1989,7 +1994,8 @@ export function ReportsTab() {
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie isAnimationActive={false}
+                        <Pie
+                          isAnimationActive={false}
                           data={pieData}
                           dataKey="value"
                           nameKey="name"
