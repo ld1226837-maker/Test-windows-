@@ -82,7 +82,7 @@ export function ProfitMixCard({
                       fontSize={11}
                     />
                     <Tooltip formatter={(v: number) => money(v)} />
-                    <Bar dataKey="value" radius={4}>
+                    <Bar isAnimationActive={false} dataKey="value" radius={4}>
                       {chart.map((d, i) => (
                         <Cell
                           key={d.name}

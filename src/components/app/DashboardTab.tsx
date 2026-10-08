@@ -1008,8 +1008,8 @@ export function DashboardTab() {
                     />
                     <YAxis fontSize={10} width={48} tickFormatter={moneyAxis} />
                     <Tooltip formatter={(v: number) => money(v)} />
-                    <Bar dataKey="Collected" fill="var(--chart-1)" radius={4} />
-                    <Bar dataKey="Expenses" fill="var(--chart-3)" radius={4} />
+                    <Bar isAnimationActive={false} dataKey="Collected" fill="var(--chart-1)" radius={4} />
+                    <Bar isAnimationActive={false} dataKey="Expenses" fill="var(--chart-3)" radius={4} />
                   </BarChart>
                 </ResponsiveContainer>
               </CardContent>
@@ -1098,14 +1098,14 @@ export function DashboardTab() {
                     <XAxis dataKey="month" fontSize={11} />
                     <YAxis fontSize={10} width={48} tickFormatter={moneyAxis} />
                     <Tooltip formatter={(v: number) => money(v)} />
-                    <Line
+                    <Line isAnimationActive={false}
                       type="monotone"
                       dataKey="Revenue"
                       name="Revenue (incl. tax)"
                       stroke="var(--chart-1)"
                       strokeWidth={2}
                     />
-                    <Line
+                    <Line isAnimationActive={false}
                       type="monotone"
                       dataKey="Profit"
                       stroke="var(--chart-2)"

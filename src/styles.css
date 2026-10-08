@@ -210,7 +210,6 @@
         oklch(0.75 0.08 200 / 18%),
         transparent 62%
       );
-    background-attachment: fixed;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-x: none;
   }
@@ -355,9 +354,8 @@
 
 /* Frosted ice-blue glass surface. */
 @utility frost {
-  background: color-mix(in oklab, var(--card) 62%, transparent);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  /* Perf: solid surface, no backdrop blur (caused scroll frame drops). */
+  background: color-mix(in oklab, var(--card) 92%, var(--background));
   border-color: color-mix(in oklab, var(--border) 70%, transparent);
   box-shadow:
     inset 0 1px 0 color-mix(in oklab, oklch(1 0 0) 22%, transparent),
@@ -376,13 +374,7 @@
 /* Short colour transition on surfaces so switching light/dark or a theme feels
    like a fade rather than a jump. Skipped when the user prefers less motion. */
 @media (prefers-reduced-motion: no-preference) {
-  body,
-  [data-slot="card"],
-  .bg-card,
-  .bg-background,
-  .bg-muted,
-  .bg-popover,
-  .bg-sidebar {
+  body {
     transition:
       background-color 180ms ease,
       border-color 180ms ease,

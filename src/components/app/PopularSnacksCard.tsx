@@ -141,7 +141,7 @@ export function PopularSnacksCard() {
                       />
                     }
                   />
-                  <Bar dataKey="qty" radius={6}>
+                  <Bar isAnimationActive={false} dataKey="qty" radius={6}>
                     <LabelList
                       dataKey="qty"
                       position="right"
