@@ -4836,3 +4836,111 @@ export async function fetchLatestFullBackupArchive(
 ): Promise<{ session: string; bytes: Uint8Array }> {
   return fetchLatestFullBackupArchiveImpl(cfg, onProgress);
 }
+
+/** One backup offered in the "Recent backups" list. */
+export type RecentTelegramBackup = {
+  session: string;
+  /** Telegram message ID of the backup's manifest — what restore opens. */
+  manifestMessageId: number;
+  /** When the backup was created (ISO). */
+  at: string;
+};
+
+export const RECENT_BACKUPS_SHOWN = 5;
+
+/** Turns a session id like 2026-10-08T07-09-48-851Z back into an ISO date. */
+export function sessionToIso(session: string): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(session);
+  if (!m) return null;
+  return `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`;
+}
+
+/** Pure — dedupes by session and keeps the newest `limit` backups. */
+export function pickRecentBackups(
+  candidates: RecentTelegramBackup[],
+  limit = RECENT_BACKUPS_SHOWN,
+): RecentTelegramBackup[] {
+  const bySession = new Map<string, RecentTelegramBackup>();
+  for (const c of candidates) {
+    if (!c?.session || !Number.isInteger(c.manifestMessageId)) continue;
+    const prev = bySession.get(c.session);
+    if (!prev || c.manifestMessageId > prev.manifestMessageId)
+      bySession.set(c.session, c);
+  }
+  return [...bySession.values()]
+    .sort(
+      (a, b) =>
+        b.at.localeCompare(a.at) || b.manifestMessageId - a.manifestMessageId,
+    )
+    .slice(0, limit);
+}
+
+/**
+ * Lists the last five backups made to this Telegram chat. Combines what this
+ * device remembers uploading, the pinned backup, and whatever the bots can
+ * still see in recent chat updates. Nothing is downloaded or decrypted here.
+ */
+export async function listRecentTelegramBackups(
+  cfg: TelegramConfig,
+  options: { signal?: AbortSignal } = {},
+): Promise<RecentTelegramBackup[]> {
+  if (!isTelegramConfigured(cfg))
+    throw new Error("Add the bot token and chat ID first.");
+  const candidates: RecentTelegramBackup[] = [];
+  const add = (session: string, id: number | undefined, at?: string) => {
+    if (typeof id !== "number") return;
+    candidates.push({
+      session,
+      manifestMessageId: id,
+      at: sessionToIso(session) ?? at ?? new Date(0).toISOString(),
+    });
+  };
+  // 1. This device's own upload history (manifest is always the last message).
+  for (const h of [readLastUpload(), ...readUploadHistory()]) {
+    if (h?.session && h.messageIds?.length)
+      add(h.session, h.messageIds.at(-1), h.at);
+  }
+  const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
+  let reached = false;
+  let lastError: unknown = null;
+  for (const token of tokens) {
+    // 2. The pinned backup (always the newest successful upload).
+    try {
+      const chat = await callApi<{ pinned_message?: TelegramUpdate["message"] }>(
+        token,
+        "getChat",
+        { chat_id: cfg.chatId },
+        { signal: options.signal },
+      );
+      reached = true;
+      const doc = chat.pinned_message?.document;
+      const parsed = doc?.file_name ? parseShardedManifestName(doc.file_name) : null;
+      if (parsed) add(parsed.session, chat.pinned_message?.message_id);
+    } catch (e) {
+      lastError = e;
+    }
+    // 3. Recent chat updates still visible to the bot (read-only, no offset).
+    try {
+      const updates = await callApi<TelegramUpdate[]>(
+        token,
+        "getUpdates",
+        { limit: 100, allowed_updates: ["message", "channel_post"] },
+        { signal: options.signal },
+      );
+      reached = true;
+      for (const u of updates ?? []) {
+        const post = u.message ?? u.channel_post;
+        if (String(post?.chat?.id ?? "") !== String(cfg.chatId)) continue;
+        const name = post?.document?.file_name;
+        const parsed = name ? parseShardedManifestName(name) : null;
+        if (parsed) add(parsed.session, post?.message_id);
+      }
+    } catch (e) {
+      // A webhook or another reader can block getUpdates; not fatal.
+      lastError = e;
+    }
+  }
+  const recent = pickRecentBackups(candidates);
+  if (!recent.length && !reached && lastError) throw lastError;
+  return recent;
+}

@@ -15,6 +15,7 @@ import {
   Plus,
   Send,
   Trash2,
+  History,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -67,6 +68,8 @@ import {
   fetchLatestShardedFullBackup,
   validateTelegramConfig,
   fetchShardedFullBackupByMessage,
+  listRecentTelegramBackups,
+  type RecentTelegramBackup,
   restoreFullBackupSharded,
   writeTelegramConfig,
   type FullBackupPreview,
@@ -169,6 +172,30 @@ export function TelegramBackupCard() {
     useState<Partial<TelegramConfig> | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [messageLocator, setMessageLocator] = useState("");
+  const [recent, setRecent] = useState<RecentTelegramBackup[] | null>(null);
+  const [recentLoading, setRecentLoading] = useState(false);
+
+  const loadRecent = async () => {
+    setRecentLoading(true);
+    try {
+      setRecent(await listRecentTelegramBackups(cfg));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRecentLoading(false);
+    }
+  };
+
+  /** Restore one backup picked from the recent list (asks passphrase first). */
+  const restoreRecent = (b: RecentTelegramBackup) => {
+    if (isOperationRunning() || busy !== null) {
+      toast.error("Another backup is in progress");
+      return;
+    }
+    setMessageLocator(String(b.manifestMessageId));
+    setPromptError(null);
+    setTgPrompt("message");
+  };
 
   // Saved details live on this device only; read them after mount so server
   // and client render the same markup.
@@ -953,6 +980,45 @@ export function TelegramBackupCard() {
                     Restore selected
                   </Button>
                 </div>
+                <Button
+                  variant="outline"
+                  disabled={busy !== null || recentLoading}
+                  onClick={() => void loadRecent()}
+                >
+                  <History className="mr-1 h-4 w-4" />
+                  {recentLoading ? "Loading backups…" : "Last 5 backups"}
+                </Button>
+                {recent !== null && (
+                  <div className="w-full space-y-2" aria-label="Last 5 Telegram backups">
+                    {recent.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No backups found in this Telegram chat yet.
+                      </p>
+                    ) : (
+                      recent.map((b) => (
+                        <button
+                          key={b.session}
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => restoreRecent(b)}
+                          className="flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2 text-left text-sm hover:bg-accent disabled:opacity-50"
+                        >
+                          <span>
+                            <span className="block font-medium text-foreground">
+                              {new Date(b.at).toLocaleString()}
+                            </span>
+                            <span className="block text-xs text-muted-foreground">
+                              Message #{b.manifestMessageId}
+                            </span>
+                          </span>
+                          <span className="flex items-center text-primary">
+                            <CloudDownload className="mr-1 h-4 w-4" /> Restore
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
                 <Button
                   variant="outline"
                   disabled={busy !== null}
