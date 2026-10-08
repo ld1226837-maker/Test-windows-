@@ -8,7 +8,11 @@ vi.mock("../backup-passphrase", () => ({
   },
   hasBackupPassphrase: async () => saved.length > 0,
 }));
-import { encryptBackup, NoPassphraseSetError, WrongPassphraseError } from "../backup-crypto";
+import {
+  encryptBackup,
+  NoPassphraseSetError,
+  WrongPassphraseError,
+} from "../backup-crypto";
 import {
   fetchLatestShardedFullBackup,
   type FullBackupTopManifest,
@@ -30,7 +34,11 @@ const top: FullBackupTopManifest = {
   shardCount: 1,
   shards: [{ index: 1, sha256: "x", photoCount: 0 }],
   files: [],
-  telegram: { shardMessageIds: [5], shardBotIndexes: [0], shardFileIds: ["fid"] },
+  telegram: {
+    shardMessageIds: [5],
+    shardBotIndexes: [0],
+    shardFileIds: ["fid"],
+  },
 };
 
 function mockTelegram(encryptedManifest: Uint8Array) {
@@ -67,7 +75,10 @@ describe("restore from the pinned Telegram manifest after a reinstall", () => {
 
   it("asks for the passphrase instead of reporting 'no complete backup'", async () => {
     mockTelegram(
-      await encryptBackup(new TextEncoder().encode(JSON.stringify(top)), "old-pass"),
+      await encryptBackup(
+        new TextEncoder().encode(JSON.stringify(top)),
+        "old-pass",
+      ),
     );
     await expect(fetchLatestShardedFullBackup(cfg)).rejects.toBeInstanceOf(
       NoPassphraseSetError,
@@ -76,7 +87,10 @@ describe("restore from the pinned Telegram manifest after a reinstall", () => {
 
   it("reports a wrong saved passphrase as such", async () => {
     mockTelegram(
-      await encryptBackup(new TextEncoder().encode(JSON.stringify(top)), "old-pass"),
+      await encryptBackup(
+        new TextEncoder().encode(JSON.stringify(top)),
+        "old-pass",
+      ),
     );
     saved = "different";
     await expect(fetchLatestShardedFullBackup(cfg)).rejects.toBeInstanceOf(
@@ -86,7 +100,10 @@ describe("restore from the pinned Telegram manifest after a reinstall", () => {
 
   it("opens the pinned backup with a typed passphrase", async () => {
     mockTelegram(
-      await encryptBackup(new TextEncoder().encode(JSON.stringify(top)), "old-pass"),
+      await encryptBackup(
+        new TextEncoder().encode(JSON.stringify(top)),
+        "old-pass",
+      ),
     );
     const found = await fetchLatestShardedFullBackup(cfg, {
       passphrase: "old-pass",

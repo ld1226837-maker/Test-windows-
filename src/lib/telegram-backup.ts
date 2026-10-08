@@ -3415,7 +3415,6 @@ export function parseTelegramMessageLocator(input: string): number {
   return id;
 }
 
-
 /** Decrypts with the typed passphrase when given, else this device's saved one. */
 function decryptWith(
   passphrase: string | undefined,
@@ -3477,7 +3476,9 @@ export async function fetchShardedFullBackupByMessage(
           options.onProgress?.({ phase: "downloading", retry }),
       });
       const top = JSON.parse(
-        new TextDecoder().decode(await decryptWith(options.passphrase, manifestBytes)),
+        new TextDecoder().decode(
+          await decryptWith(options.passphrase, manifestBytes),
+        ),
       ) as FullBackupTopManifest;
       if (
         top.version !== 2 ||
@@ -3548,7 +3549,8 @@ export async function fetchShardedFullBackupByMessage(
                 );
               const shard = ordered[index];
               if (!shard) return null;
-              return decryptWith(options.passphrase, 
+              return decryptWith(
+                options.passphrase,
                 await downloadChunk(shard.botToken ?? token, shard.fileId, {
                   signal: options.signal,
                   onRetry: (retry: RetryInfo) =>
@@ -3631,7 +3633,8 @@ export async function fetchShardedFullBackupByMessage(
               );
             const shard = ordered[index];
             if (!shard) return null;
-            return decryptWith(options.passphrase, 
+            return decryptWith(
+              options.passphrase,
               await downloadChunk(shard.botToken ?? token, shard.fileId, {
                 signal: options.signal,
                 onRetry: (retry: RetryInfo) =>
@@ -3703,12 +3706,10 @@ async function fetchLatestShardedFullBackupImpl(
               await decryptWith(options.passphrase, manifestBytes),
             ),
           ) as FullBackupTopManifest;
-          if (
-            !(
-              top.version === 2 &&
-              top.telegram?.shardFileIds?.length === top.shardCount
-            )
-          )
+          if (!(
+            top.version === 2 &&
+            top.telegram?.shardFileIds?.length === top.shardCount
+          ))
             pinnedFailure =
               "The pinned backup is an older format without shard locators.";
           if (
@@ -3742,7 +3743,8 @@ async function fetchLatestShardedFullBackupImpl(
                     );
                   const shard = ordered[index];
                   return shard
-                    ? decryptWith(options.passphrase, 
+                    ? decryptWith(
+                        options.passphrase,
                         await downloadChunk(
                           shard.botToken ?? token,
                           shard.fileId,
