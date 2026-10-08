@@ -92,6 +92,10 @@ import { LayoutPart } from "./LayoutSection";
 import { OperationProgressBar } from "./OperationProgressBar";
 import { beginOp, redact } from "@/lib/backup-log";
 import {
+  readBackupPassphrase,
+  writeBackupPassphrase,
+} from "@/lib/backup-passphrase";
+import {
   beginProgress,
   setOperationProgress,
   setOperationResult,
@@ -151,6 +155,9 @@ export function TelegramBackupCard() {
     bytes: Uint8Array;
     from: string;
   } | null>(null);
+  // Set when a Telegram "Restore latest" / "Restore selected" needs the
+  // passphrase the backup was made with (e.g. after reinstalling the app).
+  const [tgPrompt, setTgPrompt] = useState<"latest" | "message" | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -187,6 +194,30 @@ export function TelegramBackupCard() {
       await fn();
       succeeded = true;
     } catch (e) {
+      if (
+        (e instanceof WrongPassphraseError ||
+          e instanceof NoPassphraseSetError) &&
+        label.startsWith("fetch")
+      ) {
+        // First attempt used this device's saved passphrase (or none, after a
+        // reinstall). Ask for the one the backup was made with.
+        setOperationResult("error", "Backup passphrase needed");
+        setTgPrompt(label === "fetch" ? "latest" : "message");
+        setBusy(null);
+        setProgress(null);
+        return;
+      }
+      if (
+        (e instanceof WrongPassphraseError ||
+          e instanceof NoPassphraseSetError) &&
+        label.startsWith("unlock-")
+      ) {
+        setOperationResult("error", "That passphrase didn't open this backup");
+        toast.error("That passphrase didn't open this backup. Try again.");
+        setBusy(null);
+        setProgress(null);
+        return;
+      }
       setOperationResult(
         e instanceof DOMException && e.name === "AbortError"
           ? "cancelled"
@@ -264,6 +295,14 @@ export function TelegramBackupCard() {
   };
 
   const submitUnlock = (passphrase: string) => {
+    if (tgPrompt === "latest") {
+      void restoreLatest(passphrase);
+      return;
+    }
+    if (tgPrompt === "message") {
+      void restoreByMessage(passphrase);
+      return;
+    }
     if (!passphrasePrompt) return;
     const { bytes, from } = passphrasePrompt;
     void run("unlock", () => applyRestore(bytes, from, passphrase));
@@ -359,8 +398,22 @@ export function TelegramBackupCard() {
       });
     });
 
-  const restoreLatest = () =>
-    run("fetch", async () => {
+  /** After a restore that needed a typed passphrase: close the prompt and, if
+   * this install had no passphrase saved (fresh reinstall), keep the one that
+   * just worked so the next backup from this device uses the same key. */
+  const finishTelegramUnlock = async (passphrase?: string) => {
+    if (!passphrase) return;
+    setTgPrompt(null);
+    try {
+      if (!(await readBackupPassphrase()))
+        await writeBackupPassphrase(passphrase);
+    } catch {
+      /* best-effort: the restore itself already succeeded */
+    }
+  };
+
+  const restoreLatest = (passphrase?: string) =>
+    run(passphrase ? "unlock-latest" : "fetch", async () => {
       const opId = crypto.randomUUID();
       const controller = new AbortController();
       beginProgress(
@@ -374,6 +427,7 @@ export function TelegramBackupCard() {
       setProgress("Looking for the latest sharded backup…");
       const { top, shards } = await fetchLatestShardedFullBackup(cfg, {
         signal: controller.signal,
+        passphrase,
         onProgress: (p) => {
           if (p.retry) setOperationRetry(p.retry);
         },
@@ -405,14 +459,15 @@ export function TelegramBackupCard() {
           },
         },
       );
+      await finishTelegramUnlock(passphrase);
       await invalidateAllDataQueries(qc);
       toast.success("Restored from Telegram", {
         description: restoreSummary(result),
       });
     });
 
-  const restoreByMessage = () =>
-    run("fetch-message", async () => {
+  const restoreByMessage = (passphrase?: string) =>
+    run(passphrase ? "unlock-message" : "fetch-message", async () => {
       const opId = crypto.randomUUID();
       const controller = new AbortController();
       beginProgress(
@@ -433,6 +488,7 @@ export function TelegramBackupCard() {
         messageLocator,
         {
           signal: controller.signal,
+          passphrase,
           onProgress: (p) => {
             if (p.retry) setOperationRetry(p.retry);
           },
@@ -465,6 +521,7 @@ export function TelegramBackupCard() {
           },
         },
       );
+      await finishTelegramUnlock(passphrase);
       await invalidateAllDataQueries(qc);
       toast.success("Restored selected Telegram backup", {
         description: restoreSummary(result),
@@ -850,7 +907,7 @@ export function TelegramBackupCard() {
                 <Button
                   variant="outline"
                   disabled={busy !== null}
-                  onClick={restoreLatest}
+                  onClick={() => void restoreLatest()}
                 >
                   <CloudDownload className="mr-1 h-4 w-4" /> Restore latest
                 </Button>
@@ -865,7 +922,7 @@ export function TelegramBackupCard() {
                   <Button
                     variant="outline"
                     disabled={busy !== null || !messageLocator.trim()}
-                    onClick={restoreByMessage}
+                    onClick={() => void restoreByMessage()}
                   >
                     Restore selected
                   </Button>
@@ -1167,9 +1224,12 @@ export function TelegramBackupCard() {
         </AlertDialogContent>
       </AlertDialog>
       <RestorePassphrasePrompt
-        open={passphrasePrompt !== null}
-        busy={busy === "unlock"}
-        onCancel={() => setPassphrasePrompt(null)}
+        open={passphrasePrompt !== null || tgPrompt !== null}
+        busy={busy === "unlock" || (busy?.startsWith("unlock-") ?? false)}
+        onCancel={() => {
+          setPassphrasePrompt(null);
+          setTgPrompt(null);
+        }}
         onSubmit={submitUnlock}
       />
     </section>

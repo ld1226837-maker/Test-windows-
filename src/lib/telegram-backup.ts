@@ -38,6 +38,8 @@ import { receiptMimeType } from "./receipt-storage";
 import {
   decryptFullBackupBytes,
   encryptFullBackupBytes,
+  NoPassphraseSetError,
+  WrongPassphraseError,
 } from "./backup-crypto";
 import { beginOp, errorCodeFor, redact } from "./backup-log";
 import type { OpPhase } from "./operation-progress";
@@ -3413,12 +3415,32 @@ export function parseTelegramMessageLocator(input: string): number {
   return id;
 }
 
+
+/** Decrypts with the typed passphrase when given, else this device's saved one. */
+function decryptWith(
+  passphrase: string | undefined,
+  bytes: Uint8Array,
+): Promise<Uint8Array> {
+  return decryptFullBackupBytes(bytes, passphrase || undefined);
+}
+
+/** Errors that must reach the UI untouched (never swallowed by a fallback). */
+function isPassphraseOrAbort(e: unknown): boolean {
+  return (
+    e instanceof WrongPassphraseError ||
+    e instanceof NoPassphraseSetError ||
+    (e instanceof DOMException && e.name === "AbortError")
+  );
+}
+
 export async function fetchShardedFullBackupByMessage(
   cfg: TelegramConfig,
   messageLocator: string,
   options: {
     signal?: AbortSignal;
     onProgress?: (p: TelegramRestoreProgress) => void;
+    /** Passphrase typed by the person when this install has none saved. */
+    passphrase?: string | undefined;
   } = {},
 ): Promise<{
   session: string;
@@ -3430,6 +3452,7 @@ export async function fetchShardedFullBackupByMessage(
       "Add the bot token and chat ID before restoring from Telegram.",
     );
   const messageId = parseTelegramMessageLocator(messageLocator);
+  let lastError: unknown = null;
   const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
   for (let botIndex = 0; botIndex < tokens.length; botIndex++) {
     const token = tokens[botIndex]!;
@@ -3454,7 +3477,7 @@ export async function fetchShardedFullBackupByMessage(
           options.onProgress?.({ phase: "downloading", retry }),
       });
       const top = JSON.parse(
-        new TextDecoder().decode(await decryptFullBackupBytes(manifestBytes)),
+        new TextDecoder().decode(await decryptWith(options.passphrase, manifestBytes)),
       ) as FullBackupTopManifest;
       if (
         top.version !== 2 ||
@@ -3525,7 +3548,7 @@ export async function fetchShardedFullBackupByMessage(
                 );
               const shard = ordered[index];
               if (!shard) return null;
-              return decryptFullBackupBytes(
+              return decryptWith(options.passphrase, 
                 await downloadChunk(shard.botToken ?? token, shard.fileId, {
                   signal: options.signal,
                   onRetry: (retry: RetryInfo) =>
@@ -3608,7 +3631,7 @@ export async function fetchShardedFullBackupByMessage(
               );
             const shard = ordered[index];
             if (!shard) return null;
-            return decryptFullBackupBytes(
+            return decryptWith(options.passphrase, 
               await downloadChunk(shard.botToken ?? token, shard.fileId, {
                 signal: options.signal,
                 onRetry: (retry: RetryInfo) =>
@@ -3619,12 +3642,18 @@ export async function fetchShardedFullBackupByMessage(
         },
       };
     } catch (error) {
+      // A missing/wrong passphrase or a cancel is the real answer: never let
+      // "try the next bot" bury it under a later, unrelated error.
+      if (isPassphraseOrAbort(error)) throw error;
+      lastError = error;
       if (botIndex === tokens.length - 1) throw error;
     }
   }
-  throw new Error(
-    "Telegram backup message could not be opened with the configured bot(s).",
-  );
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(
+        "Telegram backup message could not be opened with the configured bot(s).",
+      );
 }
 
 async function fetchLatestShardedFullBackupImpl(
@@ -3632,6 +3661,8 @@ async function fetchLatestShardedFullBackupImpl(
   options: {
     onProgress?: (p: TelegramRestoreProgress) => void;
     signal?: AbortSignal;
+    /** Passphrase typed by the person when this install has none saved. */
+    passphrase?: string | undefined;
   } = {},
 ): Promise<{
   session: string;
@@ -3649,6 +3680,7 @@ async function fetchLatestShardedFullBackupImpl(
     );
   const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
   const found: RemoteChunk[] = [];
+  let pinnedFailure: string | null = null;
   // Prefer the pinned manifest. This survives replacement-device restore and
   // avoids consuming getUpdates just to locate the newest backup.
   for (const token of tokens) {
@@ -3668,9 +3700,17 @@ async function fetchLatestShardedFullBackupImpl(
           });
           const top = JSON.parse(
             new TextDecoder().decode(
-              await decryptFullBackupBytes(manifestBytes),
+              await decryptWith(options.passphrase, manifestBytes),
             ),
           ) as FullBackupTopManifest;
+          if (
+            !(
+              top.version === 2 &&
+              top.telegram?.shardFileIds?.length === top.shardCount
+            )
+          )
+            pinnedFailure =
+              "The pinned backup is an older format without shard locators.";
           if (
             top.version === 2 &&
             top.telegram?.shardFileIds?.length === top.shardCount
@@ -3702,7 +3742,7 @@ async function fetchLatestShardedFullBackupImpl(
                     );
                   const shard = ordered[index];
                   return shard
-                    ? decryptFullBackupBytes(
+                    ? decryptWith(options.passphrase, 
                         await downloadChunk(
                           shard.botToken ?? token,
                           shard.fileId,
@@ -3724,6 +3764,13 @@ async function fetchLatestShardedFullBackupImpl(
         }
       }
     } catch (e) {
+      // Reinstalling the app wipes the saved backup passphrase. That is NOT
+      // a "no backup found" situation: the pinned backup is right there and
+      // only needs its passphrase. Surface it so the UI can ask for it,
+      // instead of falling through to getUpdates history (which is empty
+      // after a reinstall) and reporting a misleading "no complete backup".
+      if (isPassphraseOrAbort(e)) throw e;
+      pinnedFailure = e instanceof Error ? e.message : String(e);
       console.warn(
         "Pinned Telegram manifest discovery failed; falling back to legacy discovery.",
         e,
@@ -3804,14 +3851,17 @@ async function fetchLatestShardedFullBackupImpl(
   }
   if (!set)
     throw new Error(
-      "No complete sharded backup found in that Telegram chat. The backup may be older than Telegram update history or was not completed.",
+      "No complete sharded backup found in that Telegram chat. The backup may be older than Telegram update history or was not completed." +
+        (pinnedFailure
+          ? ` (Pinned backup could not be opened: ${pinnedFailure})`
+          : ""),
     );
   const topBytes = await downloadChunk(
     set.manifest.botToken ?? cfg.botToken,
     set.manifest.fileId,
   );
   const top = JSON.parse(
-    new TextDecoder().decode(await decryptFullBackupBytes(topBytes)),
+    new TextDecoder().decode(await decryptWith(options.passphrase, topBytes)),
   ) as FullBackupTopManifest;
   if (top.version !== 2 || top.shardCount !== set.shards.length)
     throw new Error("Sharded backup manifest is incomplete or invalid.");
@@ -3838,7 +3888,7 @@ async function fetchLatestShardedFullBackupImpl(
             options.onProgress?.({ phase: "downloading", retry }),
         },
       );
-      return decryptFullBackupBytes(encrypted);
+      return decryptWith(options.passphrase, encrypted);
     },
   };
   return { session: set.session, top, shards };
@@ -4746,6 +4796,7 @@ export async function fetchLatestShardedFullBackup(
   options: {
     onProgress?: (p: TelegramRestoreProgress) => void;
     signal?: AbortSignal;
+    passphrase?: string | undefined;
   } = {},
 ) {
   return fetchLatestShardedFullBackupImpl(cfg, options);
