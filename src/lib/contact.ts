@@ -50,7 +50,9 @@ export async function callNumber(raw?: string | null): Promise<boolean> {
       ok
         ? `Number ${p.display} copied — dial it from your phone`
         : `Dial ${p.display} from your phone`,
-      { action: { label: "Open dialer", onClick: () => void openExternal(url) } },
+      {
+        action: { label: "Open dialer", onClick: () => void openExternal(url) },
+      },
     );
     return true;
   }
