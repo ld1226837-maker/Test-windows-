@@ -481,13 +481,22 @@ export async function beginAndroidExportStream(
           };
         finished = true;
         try {
-          return await invoke<{
-            saved: boolean;
-            path?: string;
-            error?: string;
+          const r = await invoke<{
+            saved?: boolean;
+            path?: string | null;
+            error?: string | null;
           }>("plugin:android-save|finish_stream_save", {
             payload: { sessionId: id },
           });
+          // The command only resolves after the native side published the
+          // file (failures reject), so a returned path means success even
+          // if an older native build dropped the `saved` flag.
+          const saved = r?.saved ?? Boolean(r?.path);
+          return {
+            saved,
+            ...(r?.path ? { path: r.path } : {}),
+            ...(!saved && r?.error ? { error: r.error } : {}),
+          };
         } catch (e) {
           return { saved: false, error: describeSaveError(e) };
         }

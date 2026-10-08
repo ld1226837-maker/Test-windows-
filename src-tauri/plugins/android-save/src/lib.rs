@@ -143,7 +143,15 @@ pub struct StreamAbortRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamFinishResponse {
+    /// Kotlin always sends `saved`. It MUST be declared here: serde drops
+    /// unknown fields, and a missing `saved` reached JS as `undefined`,
+    /// reported as "Couldn't save the backup: unknown reason" even though
+    /// the file had already been published to Downloads.
+    #[serde(default)]
+    pub saved: bool,
     pub path: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
