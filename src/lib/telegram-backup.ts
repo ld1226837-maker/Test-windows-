@@ -1793,7 +1793,18 @@ export function telegramErrorMessage(status: number, body: unknown): string {
     return "The bot can't post in that chat. Add it to the channel/group and make it an admin that can post messages.";
   if (status === 400 && /chat not found/i.test(description))
     return "Telegram couldn't find that chat ID. Check the chat ID in the setup fields.";
+  if (status === 400 && /message to (forward|copy) not found|message_id_invalid/i.test(description))
+    return BACKUP_MESSAGE_MISSING;
   return `Telegram refused the request: ${description}`;
+}
+
+/** Shown when a backup message no longer exists or none of the bots can see it. */
+export const BACKUP_MESSAGE_MISSING =
+  "That backup message isn't in this Telegram chat any more (deleted, a wrong message number, or sent by a bot that isn't set up here). Pick a backup from the recent list, add the bot that made it under extra bots, or tap 'Backup now' on the device that has the data.";
+
+/** Pure — true when an error means the Telegram message can't be found. */
+export function isBackupMessageMissing(e: unknown): boolean {
+  return e instanceof Error && e.message === BACKUP_MESSAGE_MISSING;
 }
 
 /** One Telegram rate-limit / 5xx wait, reported to progress UIs. */
@@ -2054,6 +2065,7 @@ async function uploadFullBackupImpl(
     total: parts,
     messageIds,
     botIndexes,
+    chatId: String(cfg.chatId),
     at: new Date().toISOString(),
   };
   rememberLastUpload(uploadInfo);
@@ -2266,8 +2278,10 @@ async function pruneOldTelegramBackups(
           chat_id: cfg.chatId,
           message_id: old.messageIds[i],
         });
-      } catch {
-        /* Telegram may forbid deletion; retention is best-effort. */
+      } catch (e) {
+        /* "not found" = chat was cleared, already gone. Otherwise Telegram
+         * may forbid deletion; retention is best-effort. */
+        if (isMessageGoneError(e)) continue;
       }
     }
   }
@@ -2288,6 +2302,8 @@ export type LastUpload = {
   messageIds: number[];
   /** Bot-pool slot used for each uploaded part; preserves ownership if the pool changes later. */
   botIndexes?: number[];
+  /** Chat the parts were sent to; remembered numbers are useless in any other chat. */
+  chatId?: string;
   at: string;
 };
 
@@ -2298,6 +2314,102 @@ function rememberLastUpload(info: LastUpload) {
   } catch {
     /* a full/blocked localStorage must not fail an otherwise-good upload */
   }
+}
+
+/** Pure — the remembered upload only if it belongs to this chat and is complete. */
+export function lastUploadForChat(
+  last: LastUpload | null,
+  chatId: string,
+): LastUpload | null {
+  if (!last || last.messageIds.length !== last.total) return null;
+  if (last.chatId && String(last.chatId) !== String(chatId)) return null;
+  return last;
+}
+
+/** Drops the remembered upload after Telegram confirms its messages are gone. */
+export function forgetLastUpload() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(LAST_UPLOAD_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Message shown when the chat was cleared and nothing usable is left. */
+export const TELEGRAM_CHAT_CLEARED =
+  "Your Telegram chat was cleared. Tap 'Backup now' to create a new backup.";
+
+/** Forgets every Telegram message number this device remembers (last upload,
+ * upload history and yearly archive pointers). Used after the chat history
+ * was cleared, so stale numbers never point at deleted/wrong messages. */
+export function forgetAllTelegramPointers(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const ls = window.localStorage;
+    const drop: string[] = [];
+    for (let i = 0; i < ls.length; i++) {
+      const k = ls.key(i);
+      if (
+        k &&
+        (k === LAST_UPLOAD_KEY ||
+          k === LAST_UPLOAD_HISTORY_KEY ||
+          k.startsWith(YEAR_ARCHIVE_LAST_UPLOAD_PREFIX))
+      )
+        drop.push(k);
+    }
+    for (const k of drop) ls.removeItem(k);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Pure — true for Telegram "that message is gone" errors on delete/forward. */
+export function isMessageGoneError(e: unknown): boolean {
+  if (isBackupMessageMissing(e)) return true;
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return /message to (delete|forward|copy) not found|message_id_invalid|message can't be deleted/i.test(
+    msg,
+  );
+}
+
+/** Drops one remembered upload (by session) from the local history. */
+function forgetUploadSession(session: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const left = readUploadHistory().filter((h) => h?.session !== session);
+    window.localStorage.setItem(LAST_UPLOAD_HISTORY_KEY, JSON.stringify(left));
+    const last = readLastUpload();
+    if (last?.session === session) window.localStorage.removeItem(LAST_UPLOAD_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Checks that the remembered newest backup still exists in the chat. When the
+ * chat history was cleared, every remembered number is erased so restore and
+ * the recent list rebuild only from what is really in the chat.
+ * Returns false when the pointers were stale and got cleared.
+ */
+export async function validateRemotePointers(
+  cfg: TelegramConfig,
+): Promise<boolean> {
+  const last = lastUploadForChat(readLastUpload(), cfg.chatId);
+  const probeId = last?.messageIds.at(-1);
+  if (typeof probeId !== "number") return true;
+  try {
+    const doc = await readBackupMessage(
+      cfg,
+      probeId,
+      botTokenForChunk(cfg, last?.botIndexes?.at(-1) ?? 0),
+    );
+    if (doc) return true;
+  } catch (e) {
+    if (!isMessageGoneError(e)) return true; // network etc. — don't wipe
+  }
+  forgetAllTelegramPointers();
+  return false;
 }
 
 export function readLastUpload(): LastUpload | null {
@@ -2346,6 +2458,56 @@ export function chunksFromUpdates(
     found.push(chunk);
   }
   return found;
+}
+
+type ForwardedDoc = { fileId: string; fileName: string; botToken: string };
+
+/**
+ * Reads a backup message's document by forwarding it (the only Bot API way to
+ * get a file_id from a message number), silently, then deletes the forwarded
+ * copy so the chat isn't cluttered. Tries the preferred bot first, then every
+ * other configured bot, because bots only see messages they can access.
+ */
+export async function readBackupMessage(
+  cfg: TelegramConfig,
+  messageId: number,
+  preferredToken?: string,
+  signal?: AbortSignal,
+): Promise<ForwardedDoc | null> {
+  const pool = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
+  const order = preferredToken
+    ? [preferredToken, ...pool.filter((t) => t !== preferredToken)]
+    : pool;
+  let lastError: unknown = null;
+  for (const token of order) {
+    try {
+      const fwd = await callApi<TelegramUpdate["message"]>(
+        token,
+        "forwardMessage",
+        {
+          chat_id: cfg.chatId,
+          from_chat_id: cfg.chatId,
+          message_id: messageId,
+          disable_notification: true,
+        },
+        { signal },
+      );
+      if (typeof fwd?.message_id === "number")
+        void callApi(token, "deleteMessage", {
+          chat_id: cfg.chatId,
+          message_id: fwd.message_id,
+        }).catch(() => {});
+      const doc = fwd?.document;
+      if (doc?.file_id && doc.file_name)
+        return { fileId: doc.file_id, fileName: doc.file_name, botToken: token };
+      return null; // message exists but isn't a backup file
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") throw e;
+      lastError = e;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
 }
 
 async function callApi<T>(
@@ -2513,31 +2675,37 @@ async function fetchLatestFullBackupArchiveImpl(
   let group = latestCompleteGroup(discovered);
 
   if (!group) {
-    const last = readLastUpload();
-    if (!last || last.messageIds.length !== last.total)
+    const last = lastUploadForChat(readLastUpload(), cfg.chatId);
+    if (!last)
       throw new Error(
-        "No complete backup found in that Telegram chat yet. Tap 'Backup now' on the device that has the data, then try again.",
+        readUploadHistory().length === 0 && discovered.length === 0
+          ? TELEGRAM_CHAT_CLEARED
+          : "No complete backup found in that Telegram chat yet. Tap 'Backup now' on the device that has the data, then try again.",
       );
     // Fall back to the pointer this device kept when it uploaded: re-read
     // each remembered message through forwardMessage so we get its file_id
     // back even after getUpdates has aged out.
     const chunks: RemoteChunk[] = [];
     for (let i = 0; i < last.messageIds.length; i++) {
-      const forwarded = await callApi<TelegramUpdate["message"]>(
-        botTokenForChunk(cfg, last.botIndexes?.[i] ?? i),
-        "forwardMessage",
-        {
-          chat_id: cfg.chatId,
-          from_chat_id: cfg.chatId,
-          message_id: last.messageIds[i],
-        },
-      );
-      const doc = forwarded?.document;
-      if (doc?.file_id && doc.file_name) {
+      let doc: ForwardedDoc | null;
+      try {
+        doc = await readBackupMessage(
+          cfg,
+          last.messageIds[i]!,
+          botTokenForChunk(cfg, last.botIndexes?.[i] ?? i),
+        );
+      } catch (e) {
+        if (isMessageGoneError(e)) {
+          forgetAllTelegramPointers();
+          throw new Error(TELEGRAM_CHAT_CLEARED);
+        }
+        throw e;
+      }
+      if (doc) {
         const chunk: RemoteChunk = {
-          fileName: doc.file_name,
-          fileId: doc.file_id,
-          botToken: botTokenForChunk(cfg, last.botIndexes?.[i] ?? i),
+          fileName: doc.fileName,
+          fileId: doc.fileId,
+          botToken: doc.botToken,
         };
         const mid = last.messageIds[i];
         if (typeof mid === "number") chunk.messageId = mid;
@@ -3154,6 +3322,7 @@ async function uploadShardedFullBackupImpl(
       total: messageIds.length,
       messageIds,
       botIndexes,
+      chatId: String(cfg.chatId),
       at: new Date().toISOString(),
     };
     rememberLastUpload(uploadInfo);
@@ -3440,20 +3609,26 @@ export async function fetchShardedFullBackupByMessage(
   for (let botIndex = 0; botIndex < tokens.length; botIndex++) {
     const token = tokens[botIndex]!;
     try {
-      const forwarded = await callApi<TelegramUpdate["message"]>(
+      const fwd = await readBackupMessage(
+        { ...cfg, extraBotTokens: [] , botToken: token },
+        messageId,
         token,
-        "forwardMessage",
-        {
-          chat_id: cfg.chatId,
-          from_chat_id: cfg.chatId,
-          message_id: messageId,
-        },
-        { signal: options.signal },
+        options.signal,
       );
-      const doc = forwarded?.document;
-      if (!doc?.file_id || !doc.file_name) continue;
+      if (!fwd) {
+        lastError = new Error(
+          `Message ${messageId} isn't a backup in this chat. Pick a backup from the recent list instead.`,
+        );
+        continue;
+      }
+      const doc = { file_id: fwd.fileId, file_name: fwd.fileName };
       const parsedManifest = parseShardedManifestName(doc.file_name);
-      if (!parsedManifest) continue;
+      if (!parsedManifest) {
+        lastError = new Error(
+          `Message ${messageId} is a backup part, not the backup's main file. Pick a backup from the recent list instead.`,
+        );
+        continue;
+      }
       const manifestBytes = await downloadChunk(token, doc.file_id, {
         signal: options.signal,
         onRetry: (retry: RetryInfo) =>
@@ -3805,31 +3980,23 @@ async function fetchLatestShardedFullBackupImpl(
   }
   let set = latestCompleteShardedSet(found);
   if (!set) {
-    const last = readLastUpload();
-    if (last && last.messageIds.length === last.total) {
+    const last = lastUploadForChat(readLastUpload(), cfg.chatId);
+    if (last) {
       const docs: RemoteChunk[] = [];
       for (let i = 0; i < last.messageIds.length; i++) {
         const token = botTokenForChunk(cfg, last.botIndexes?.[i] ?? i);
         try {
-          const forwarded = await callApi<TelegramUpdate["message"]>(
-            token,
-            "forwardMessage",
-            {
-              chat_id: cfg.chatId,
-              from_chat_id: cfg.chatId,
-              message_id: last.messageIds[i],
-            },
-          );
-          const doc = forwarded?.document;
-          if (doc?.file_id && doc.file_name)
+          const doc = await readBackupMessage(cfg, last.messageIds[i]!, token);
+          if (doc)
             docs.push({
-              fileName: doc.file_name,
-              fileId: doc.file_id,
+              fileName: doc.fileName,
+              fileId: doc.fileId,
               messageId: last.messageIds[i],
-              botToken: token,
+              botToken: doc.botToken,
             });
-        } catch {
-          /* best-effort: failure here is non-fatal */
+        } catch (e) {
+          // best-effort; a confirmed-missing message means the pointer is stale
+          if (isBackupMessageMissing(e)) forgetLastUpload();
         }
       }
       set = latestCompleteShardedSet(docs);
@@ -4888,6 +5055,7 @@ export async function listRecentTelegramBackups(
 ): Promise<RecentTelegramBackup[]> {
   if (!isTelegramConfigured(cfg))
     throw new Error("Add the bot token and chat ID first.");
+  await validateRemotePointers(cfg);
   const candidates: RecentTelegramBackup[] = [];
   const add = (session: string, id: number | undefined, at?: string) => {
     if (typeof id !== "number") return;
@@ -4941,7 +5109,23 @@ export async function listRecentTelegramBackups(
       lastError = e;
     }
   }
-  const recent = pickRecentBackups(candidates);
+  const picked = pickRecentBackups(candidates, RECENT_BACKUPS_SHOWN * 2);
+  // Drop remembered entries whose manifest no longer exists in the chat.
+  const recent: RecentTelegramBackup[] = [];
+  for (const b of picked) {
+    if (recent.length >= RECENT_BACKUPS_SHOWN) break;
+    if (reached) {
+      try {
+        await readBackupMessage(cfg, b.manifestMessageId, cfg.botToken);
+      } catch (e) {
+        if (isMessageGoneError(e)) {
+          forgetUploadSession(b.session);
+          continue;
+        }
+      }
+    }
+    recent.push(b);
+  }
   if (!recent.length && !reached && lastError) throw lastError;
   return recent;
 }

@@ -69,6 +69,8 @@ import {
   validateTelegramConfig,
   fetchShardedFullBackupByMessage,
   listRecentTelegramBackups,
+  forgetAllTelegramPointers,
+  isBackupMessageMissing,
   type RecentTelegramBackup,
   restoreFullBackupSharded,
   writeTelegramConfig,
@@ -251,6 +253,19 @@ export function TelegramBackupCard() {
       );
       if (!(e instanceof DOMException && e.name === "AbortError"))
         toast.error(redact(errorMessage(e)));
+      // The backup message is gone or the number was wrong: close the
+      // passphrase box and show the recent backups so one can be picked.
+      if (
+        (label.startsWith("fetch") || label.startsWith("unlock")) &&
+        (isBackupMessageMissing(e) ||
+          /isn't a backup in this chat|not the backup's main file|No complete (sharded )?backup found/i.test(
+            errorMessage(e),
+          ))
+      ) {
+        setTgPrompt(null);
+        setPromptError(null);
+        void loadRecent();
+      }
     } finally {
       if (succeeded)
         setOperationResult(
@@ -968,7 +983,7 @@ export function TelegramBackupCard() {
                   <Input
                     value={messageLocator}
                     onChange={(e) => setMessageLocator(e.target.value)}
-                    placeholder="Backup message ID or t.me link"
+                    placeholder="Message ID (or use Last 5 backups)"
                     aria-label="Telegram backup message ID or link"
                     disabled={busy !== null}
                   />
@@ -987,6 +1002,24 @@ export function TelegramBackupCard() {
                 >
                   <History className="mr-1 h-4 w-4" />
                   {recentLoading ? "Loading backups…" : "Last 5 backups"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={busy !== null || recentLoading}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        "Cleared your Telegram chat? This forgets the saved backup message numbers on this device. Your next backup starts fresh.",
+                      )
+                    )
+                      return;
+                    forgetAllTelegramPointers();
+                    setRecent(null);
+                    setMessageLocator("");
+                    toast.success("Telegram backup links reset. Tap 'Backup now' to make a new backup.");
+                  }}
+                >
+                  Reset Telegram backup links
                 </Button>
                 {recent !== null && (
                   <div
