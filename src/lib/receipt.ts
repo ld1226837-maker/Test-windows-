@@ -37,7 +37,7 @@ import {
 } from "./print";
 import { printPdfBytesAsImages } from "./print-raster";
 import { buildPremiumReceiptPdf } from "./receipt-premium";
-import { receiptModeLabel } from "./payments";
+import { receiptAdvanceAmount, receiptModeLabel } from "./payments";
 import { readAppSettings } from "./settings";
 
 /** PDF-safe money: helvetica has no rupee glyph, and receipts drop paise.
@@ -1252,7 +1252,19 @@ export function billReceipt(bill: Bill): ReceiptDoc {
       ...(bill.discount
         ? [{ label: "Offer / Discount", amount: -bill.discount }]
         : []),
-      ...(paid ? [{ label: "Advance paid", amount: -paid }] : []),
+      ...(paid
+        ? [
+            {
+              label: "Advance paid",
+              // Display only: the advance actually entered, not the running
+              // paid total (which becomes the full amount once settled).
+              amount: -Math.min(
+                paid,
+                receiptAdvanceAmount("bill", bill.id, paid),
+              ),
+            },
+          ]
+        : []),
     ],
     totals: [
       { label: "Subtotal", value: pmoney(bill.subtotal) },
@@ -1363,7 +1375,17 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
         ? [{ label: "Offer / Discount", amount: -b.discount }]
         : []),
       ...(b.advance_paid
-        ? [{ label: "Advance paid", amount: -b.advance_paid }]
+        ? [
+            {
+              label: "Advance paid",
+              // Display only: the advance actually entered, not the running
+              // paid total.
+              amount: -Math.min(
+                b.advance_paid,
+                receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
+              ),
+            },
+          ]
         : []),
     ],
     totals: [
