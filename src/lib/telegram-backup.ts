@@ -1757,8 +1757,29 @@ export function retryAfterMs(body: unknown, attempt: number): number {
   return Math.min(60_000, 3_000 * 2 ** Math.max(0, attempt - 1));
 }
 
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
+function abortError(
+  message = "The Telegram request was cancelled.",
+): DOMException {
+  return new DOMException(message, "AbortError");
+}
+
+/** Sleeps for `ms`, but rejects with an AbortError as soon as `signal` fires. */
+const sleep = (ms: number, signal?: AbortSignal | undefined) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 async function telegramFetch(
   url: string,
@@ -1766,20 +1787,32 @@ async function telegramFetch(
   options: {
     retryNetwork?: boolean | undefined;
     signal?: AbortSignal | undefined;
+    /** Caps network-level attempts (default MAX_CHUNK_ATTEMPTS). */
+    maxAttempts?: number | undefined;
   } = {},
 ): Promise<Response> {
   const retryNetwork = options.retryNetwork !== false;
-  for (let attempt = 1; attempt <= MAX_CHUNK_ATTEMPTS; attempt++) {
+  const signal = options.signal ?? init?.signal ?? undefined;
+  const attempts = retryNetwork
+    ? Math.max(1, options.maxAttempts ?? MAX_CHUNK_ATTEMPTS)
+    : 1;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // A cancel or deadline is the answer: never retry it, never swallow it.
+    if (signal?.aborted) throw abortError();
     try {
-      const signal = options.signal ?? init?.signal;
       return await fetch(url, signal ? { ...init, signal } : init);
-    } catch {
-      if (attempt < MAX_CHUNK_ATTEMPTS)
-        await sleep(retryAfterMs(null, attempt));
+    } catch (e) {
+      if (signal?.aborted || (e as Error)?.name === "AbortError")
+        throw abortError();
+      lastError = e;
+      if (!retryNetwork) throw e;
+      if (attempt < attempts) await sleep(retryAfterMs(null, attempt), signal);
     }
   }
+  void lastError;
   throw new Error(
-    `Couldn't reach Telegram after ${MAX_CHUNK_ATTEMPTS} attempts — check the internet connection and try again.`,
+    `Couldn't reach Telegram after ${attempts} attempts — check the internet connection and try again.`,
   );
 }
 
@@ -1938,6 +1971,9 @@ async function uploadChunks(
           { retryNetwork: false },
         );
       } catch (networkError) {
+        // A cancel is not a lost response: stop, never reconcile or resend.
+        if (signal?.aborted || (networkError as Error)?.name === "AbortError")
+          throw abortError("The backup was cancelled");
         // The HTTP response can be lost after Telegram has already accepted
         // the document. Before retrying, look for the exact filename in the
         // bot's recent update queue. This prevents a timeout from producing a
@@ -1956,7 +1992,7 @@ async function uploadChunks(
           break;
         }
         if (attempt < MAX_CHUNK_ATTEMPTS) {
-          await sleep(retryAfterMs(null, attempt));
+          await sleep(retryAfterMs(null, attempt), signal);
           continue;
         }
         throw networkError;
@@ -2012,7 +2048,7 @@ async function uploadChunks(
           );
           break;
         }
-        await sleep(retryAfterMs(body, attempt));
+        await sleep(retryAfterMs(body, attempt), signal);
         continue;
       }
       if (res.status === 429 && attempt < MAX_CHUNK_ATTEMPTS) {
@@ -2025,7 +2061,7 @@ async function uploadChunks(
           bytesTotal: bytes.byteLength,
           retry: { attempt, max: MAX_CHUNK_ATTEMPTS, retryAfterMs: waitMs },
         });
-        await sleep(waitMs);
+        await sleep(waitMs, signal);
         continue;
       }
       throw new Error(telegramErrorMessage(res.status, body));
@@ -2391,10 +2427,10 @@ function forgetUploadSession(session: string): void {
 }
 
 /**
- * Checks that the remembered newest backup still exists in the chat. When the
- * chat history was cleared, every remembered number is erased so restore and
- * the recent list rebuild only from what is really in the chat.
- * Returns false when the pointers were stale and got cleared.
+ * Checks that the remembered newest backup still exists in the chat. If it is
+ * gone, only that one remembered backup is dropped; the rest of the saved
+ * history is kept and checked separately during discovery.
+ * Returns false when the newest pointer was stale and got cleared.
  */
 export async function validateRemotePointers(
   cfg: TelegramConfig,
@@ -2412,7 +2448,10 @@ export async function validateRemotePointers(
   } catch (e) {
     if (!isMessageGoneError(e)) return true; // network etc. — don't wipe
   }
-  forgetAllTelegramPointers();
+  // Only the newest remembered backup is proven gone. Older history entries
+  // may still exist, so drop just this session instead of erasing everything
+  // (the explicit "Reset Telegram backup links" button does the full wipe).
+  if (last) forgetUploadSession(last.session);
   return false;
 }
 
@@ -2466,6 +2505,112 @@ export function chunksFromUpdates(
 
 type ForwardedDoc = { fileId: string; fileName: string; botToken: string };
 
+const FORWARD_CLEANUP_KEY = "ks:telegram-forward-cleanup";
+type PendingForwardCopy = { id: number; botIndex: number; chatId: string };
+
+function readPendingForwards(): PendingForwardCopy[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(FORWARD_CLEANUP_KEY);
+    const list = raw ? (JSON.parse(raw) as PendingForwardCopy[]) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+function writePendingForwards(list: PendingForwardCopy[]) {
+  if (typeof window === "undefined") return;
+  try {
+    if (list.length)
+      window.localStorage.setItem(
+        FORWARD_CLEANUP_KEY,
+        JSON.stringify(list.slice(-50)),
+      );
+    else window.localStorage.removeItem(FORWARD_CLEANUP_KEY);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Only "not found" means a forwarded copy is already gone; "can't be deleted"
+ * is a real refusal (no permission) and must stay tracked. */
+function isCopyAlreadyGone(e: unknown): boolean {
+  return /message to delete not found|message_id_invalid/i.test(
+    e instanceof Error ? e.message : String(e ?? ""),
+  );
+}
+
+/** How many forwarded copies this device could not delete from the chat yet. */
+export function pendingForwardedCopies(): number {
+  return readPendingForwards().length;
+}
+
+/**
+ * Reading a backup message works by forwarding it (the only Bot API way to
+ * learn its file_id). The forwarded copy must not pile up in the chat: delete
+ * it now (awaited, one retry); if Telegram refuses, remember it so a later
+ * sweep retries instead of silently leaving clutter behind.
+ */
+async function deleteForwardedCopy(
+  cfg: TelegramConfig,
+  token: string,
+  messageId: number,
+): Promise<void> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await callApi(
+        token,
+        "deleteMessage",
+        { chat_id: cfg.chatId, message_id: messageId },
+        { maxAttempts: 2 },
+      );
+      return;
+    } catch (e) {
+      if (isCopyAlreadyGone(e)) return;
+    }
+  }
+  const pool = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
+  const botIndex = Math.max(0, pool.indexOf(token));
+  writePendingForwards([
+    ...readPendingForwards().filter(
+      (x) => !(x.id === messageId && x.chatId === String(cfg.chatId)),
+    ),
+    { id: messageId, botIndex, chatId: String(cfg.chatId) },
+  ]);
+}
+
+/** Best-effort retry of earlier failed deletions (bounded, cancellable). */
+export async function sweepForwardedCopies(
+  cfg: TelegramConfig,
+  signal?: AbortSignal,
+): Promise<number> {
+  const pool = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
+  const left: PendingForwardCopy[] = [];
+  for (const item of readPendingForwards().slice(0, 10)) {
+    if (item.chatId !== String(cfg.chatId)) {
+      left.push(item);
+      continue;
+    }
+    const token = pool[item.botIndex];
+    if (!token || signal?.aborted) {
+      left.push(item);
+      continue;
+    }
+    try {
+      await callApi(
+        token,
+        "deleteMessage",
+        { chat_id: cfg.chatId, message_id: item.id },
+        { signal, maxAttempts: 1 },
+      );
+    } catch (e) {
+      if (!isCopyAlreadyGone(e)) left.push(item);
+    }
+  }
+  writePendingForwards([...left, ...readPendingForwards().slice(10)]);
+  return readPendingForwards().length;
+}
+
 /**
  * Reads a backup message's document by forwarding it (the only Bot API way to
  * get a file_id from a message number), silently, then deletes the forwarded
@@ -2477,13 +2622,18 @@ export async function readBackupMessage(
   messageId: number,
   preferredToken?: string,
   signal?: AbortSignal,
+  limits: { maxAttempts?: number } = {},
 ): Promise<ForwardedDoc | null> {
   const pool = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
   const order = preferredToken
     ? [preferredToken, ...pool.filter((t) => t !== preferredToken)]
     : pool;
-  let lastError: unknown = null;
+  // A transient failure (network, 429) on one bot must not be hidden by
+  // another bot's "message not found": prefer reporting the non-gone error.
+  let goneError: unknown = null;
+  let otherError: unknown = null;
   for (const token of order) {
+    if (signal?.aborted) throw abortError();
     try {
       const fwd = await callApi<TelegramUpdate["message"]>(
         token,
@@ -2494,13 +2644,10 @@ export async function readBackupMessage(
           message_id: messageId,
           disable_notification: true,
         },
-        { signal },
+        { signal, maxAttempts: limits.maxAttempts },
       );
       if (typeof fwd?.message_id === "number")
-        void callApi(token, "deleteMessage", {
-          chat_id: cfg.chatId,
-          message_id: fwd.message_id,
-        }).catch(() => {});
+        await deleteForwardedCopy(cfg, token, fwd.message_id);
       const doc = fwd?.document;
       if (doc?.file_id && doc.file_name)
         return {
@@ -2511,10 +2658,12 @@ export async function readBackupMessage(
       return null; // message exists but isn't a backup file
     } catch (e) {
       if ((e as Error)?.name === "AbortError") throw e;
-      lastError = e;
+      if (isMessageGoneError(e)) goneError = e;
+      else otherError = e;
     }
   }
-  if (lastError) throw lastError;
+  if (otherError) throw otherError;
+  if (goneError) throw goneError;
   return null;
 }
 
@@ -2525,8 +2674,11 @@ async function callApi<T>(
   options: {
     signal?: AbortSignal | undefined;
     onRetry?: ((retry: RetryInfo) => void) | undefined;
+    /** Caps 429/5xx and network attempts (default MAX_CHUNK_ATTEMPTS). */
+    maxAttempts?: number | undefined;
   } = {},
 ): Promise<T> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? MAX_CHUNK_ATTEMPTS);
   for (let attempt = 1; ; attempt++) {
     const res = await telegramFetch(
       `${API_ROOT}/bot${token}/${method}`,
@@ -2535,29 +2687,22 @@ async function callApi<T>(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       },
-      { signal: options.signal },
+      { signal: options.signal, maxAttempts },
     );
     const body = (await res.json().catch(() => null)) as {
       ok?: boolean;
       result?: T;
     } | null;
     if (res.ok && body?.ok) return body.result as T;
-    if (
-      (res.status === 429 || res.status >= 500) &&
-      attempt < MAX_CHUNK_ATTEMPTS
-    ) {
+    if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
       const waitMs = retryAfterMs(body, attempt);
       // Observer only: lets the progress bar show a live "retrying in N s".
       try {
-        options.onRetry?.({
-          attempt,
-          max: MAX_CHUNK_ATTEMPTS,
-          retryAfterMs: waitMs,
-        });
+        options.onRetry?.({ attempt, max: maxAttempts, retryAfterMs: waitMs });
       } catch {
         /* observer */
       }
-      await sleep(waitMs);
+      await sleep(waitMs, options.signal);
       continue;
     }
     throw new Error(telegramErrorMessage(res.status, body));
@@ -3593,6 +3738,30 @@ function isPassphraseOrAbort(e: unknown): boolean {
   );
 }
 
+/** Why a chosen Telegram message can't be opened as a backup. */
+export type BackupSelectionErrorCode =
+  "message-gone" | "not-a-backup" | "shard-not-manifest";
+
+/** Selection errors are per-item and actionable: the picked message is bad,
+ * the rest of the list and the saved-file fallback are untouched. */
+export class BackupSelectionError extends Error {
+  readonly code: BackupSelectionErrorCode;
+  constructor(code: BackupSelectionErrorCode, message: string) {
+    super(message);
+    this.name = "BackupSelectionError";
+    this.code = code;
+  }
+}
+
+/** True when the picked message itself is unusable (stale/wrong), as opposed
+ * to a passphrase, network or cancel problem. */
+export function isStaleSelectionError(e: unknown): boolean {
+  return e instanceof BackupSelectionError || isMessageGoneError(e);
+}
+
+export const STALE_SELECTION_HELP =
+  "Pick another backup from the list, tap Refresh, paste the message link of the backup's manifest, or restore from a saved backup file.";
+
 export async function fetchShardedFullBackupByMessage(
   cfg: TelegramConfig,
   messageLocator: string,
@@ -3612,7 +3781,14 @@ export async function fetchShardedFullBackupByMessage(
       "Add the bot token and chat ID before restoring from Telegram.",
     );
   const messageId = parseTelegramMessageLocator(messageLocator);
-  let lastError: unknown = null;
+  // A real failure on one bot (download, decrypt, bad manifest, unavailable
+  // shard bot) must never be replaced by another bot's "message not found".
+  let staleError: unknown = null;
+  let hardError: unknown = null;
+  const note = (e: unknown) => {
+    if (isStaleSelectionError(e)) staleError = e;
+    else hardError = e;
+  };
   const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
   for (let botIndex = 0; botIndex < tokens.length; botIndex++) {
     const token = tokens[botIndex]!;
@@ -3624,16 +3800,22 @@ export async function fetchShardedFullBackupByMessage(
         options.signal,
       );
       if (!fwd) {
-        lastError = new Error(
-          `Message ${messageId} isn't a backup in this chat. Pick a backup from the recent list instead.`,
+        note(
+          new BackupSelectionError(
+            "not-a-backup",
+            `Message ${messageId} isn't a backup file in this chat. ${STALE_SELECTION_HELP}`,
+          ),
         );
         continue;
       }
       const doc = { file_id: fwd.fileId, file_name: fwd.fileName };
       const parsedManifest = parseShardedManifestName(doc.file_name);
       if (!parsedManifest) {
-        lastError = new Error(
-          `Message ${messageId} is a backup part, not the backup's main file. Pick a backup from the recent list instead.`,
+        note(
+          new BackupSelectionError(
+            "shard-not-manifest",
+            `Message ${messageId} is a backup part, not the backup's main file. ${STALE_SELECTION_HELP}`,
+          ),
         );
         continue;
       }
@@ -3815,12 +3997,13 @@ export async function fetchShardedFullBackupByMessage(
       // A missing/wrong passphrase or a cancel is the real answer: never let
       // "try the next bot" bury it under a later, unrelated error.
       if (isPassphraseOrAbort(error)) throw error;
-      lastError = error;
-      if (botIndex === tokens.length - 1) throw error;
+      note(error);
+      if (botIndex === tokens.length - 1) throw hardError ?? staleError;
     }
   }
-  throw lastError instanceof Error
-    ? lastError
+  const final = hardError ?? staleError;
+  throw final instanceof Error
+    ? final
     : new Error(
         "Telegram backup message could not be opened with the configured bot(s).",
       );
@@ -5052,88 +5235,448 @@ export function pickRecentBackups(
     .slice(0, limit);
 }
 
+/** Where a listed backup pointer came from. */
+export type BackupOrigin =
+  /** Remembered by this device when it uploaded (device-local pointer). */
+  | "device"
+  /** The chat's pinned message, as reported by Telegram. */
+  | "pinned"
+  /** A recent update the bot can still see (Telegram keeps these ~24 h). */
+  | "updates";
+
+export type DiscoveredBackup = RecentTelegramBackup & {
+  origins: BackupOrigin[];
+  /**
+   * "verified": Telegram just returned this message as the backup's manifest
+   * document. "unverified": it could not be checked right now (network, rate
+   * limit, deadline); it is still offered, and restore re-validates it.
+   * Neither status means the passphrase or shards were checked — restore does
+   * that, before any data is modified.
+   */
+  status: "verified" | "unverified";
+  warning?: string;
+};
+
+export type StalePointerCode =
+  "message-gone" | "not-a-manifest" | "wrong-session";
+
+/** A remembered/discovered pointer Telegram says is unusable. Never selectable. */
+export type StaleBackupPointer = {
+  session: string;
+  manifestMessageId: number;
+  at: string;
+  origins: BackupOrigin[];
+  code: StalePointerCode;
+  message: string;
+};
+
+export type DiscoveryResult = {
+  backups: DiscoveredBackup[];
+  stale: StaleBackupPointer[];
+  /** At least one bot answered getChat/getUpdates/forward for this chat. */
+  telegramReachable: boolean;
+  /** The overall deadline passed; unchecked candidates are listed "unverified". */
+  timedOut: boolean;
+  /** Temporary forwarded copies Telegram wouldn't let a bot delete yet. */
+  leftoverCopies: number;
+  /** Always-visible limits and hints for the person (never empty). */
+  notes: string[];
+};
+
+export const DISCOVERY_DEADLINE_MS = 30_000;
+const DISCOVERY_CALL_ATTEMPTS = 2;
+/** Backups checked against Telegram at the same time. */
+const DISCOVERY_CONCURRENCY = 3;
+
+export const TELEGRAM_HISTORY_LIMIT_NOTE =
+  "Telegram bots can't search old chat history. This list combines backups this device remembers, the pinned message, and recent messages the bots can still see — older or cross-device backups may not appear.";
+export const TELEGRAM_FALLBACK_NOTE =
+  "If a backup is missing: paste its message link or ID (long-press the backup's manifest file in Telegram → Copy Link), or restore from a saved backup file.";
+
+/** Links the caller's cancel signal with a deadline; `timedOut()` tells them apart. */
+function withDeadline(parent: AbortSignal | undefined, ms: number) {
+  const controller = new AbortController();
+  let expired = false;
+  const onParent = () => controller.abort();
+  if (parent?.aborted) controller.abort();
+  else parent?.addEventListener("abort", onParent, { once: true });
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, ms);
+  return {
+    signal: controller.signal,
+    timedOut: () => expired,
+    dispose: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onParent);
+    },
+  };
+}
+
 /**
- * Lists the last five backups made to this Telegram chat. Combines what this
- * device remembers uploading, the pinned backup, and whatever the bots can
- * still see in recent chat updates. Nothing is downloaded or decrypted here.
+ * Finds restorable backups for this chat — bounded, cancellable, and honest
+ * about Telegram's limits:
+ *  - device-local pointers (what this device uploaded) and Telegram-discovered
+ *    items (pinned message, recent updates) are merged but labelled by origin;
+ *  - every candidate manifest message is checked against Telegram (it must be
+ *    a document with a manifest name for the same session) before it is
+ *    offered as restorable;
+ *  - a deleted/wrong/non-manifest message is moved to `stale` with an
+ *    actionable reason and never blocks the rest of the list;
+ *  - a deadline (default 30 s) and the caller's AbortSignal bound the work;
+ *    only the caller's cancel throws (AbortError).
+ * Nothing is downloaded or decrypted here.
+ */
+export async function discoverTelegramBackups(
+  cfg: TelegramConfig,
+  options: { signal?: AbortSignal; deadlineMs?: number } = {},
+): Promise<DiscoveryResult> {
+  if (!isTelegramConfigured(cfg))
+    throw new Error("Add the bot token and chat ID first.");
+  const deadline = withDeadline(
+    options.signal,
+    options.deadlineMs ?? DISCOVERY_DEADLINE_MS,
+  );
+  const signal = deadline.signal;
+  const notes: string[] = [TELEGRAM_HISTORY_LIMIT_NOTE];
+  const userCancelled = () => options.signal?.aborted === true;
+  try {
+    type Cand = {
+      session: string;
+      id: number;
+      at: string;
+      origins: Set<BackupOrigin>;
+    };
+    const cands = new Map<string, Cand>(); // key: session#id
+    const add = (
+      origin: BackupOrigin,
+      session: string,
+      id: number | undefined,
+      at?: string,
+    ) => {
+      if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) return;
+      const key = `${session}#${id}`;
+      const found = cands.get(key);
+      if (found) found.origins.add(origin);
+      else
+        cands.set(key, {
+          session,
+          id,
+          at: sessionToIso(session) ?? at ?? new Date(0).toISOString(),
+          origins: new Set([origin]),
+        });
+    };
+
+    // 1. Device-local remembered pointers (only for this chat).
+    for (const h of [readLastUpload(), ...readUploadHistory()]) {
+      if (!h?.session || !h.messageIds?.length) continue;
+      if (h.chatId && String(h.chatId) !== String(cfg.chatId)) continue;
+      add("device", h.session, h.messageIds.at(-1), h.at);
+    }
+
+    // 2. Telegram-discovered: pinned message + recent updates, per bot.
+    const tokens = [
+      cfg.botToken,
+      ...(cfg.extraBotTokens ?? []).filter(Boolean),
+    ];
+    let reached = false;
+    let updatesBlocked = false;
+    let updatesSeen = 0;
+    const unreachableErrors: string[] = [];
+    const probeBot = async (token: string) => {
+      if (signal.aborted) return;
+      try {
+        const chat = await callApi<{
+          pinned_message?: TelegramUpdate["message"];
+        }>(
+          token,
+          "getChat",
+          { chat_id: cfg.chatId },
+          { signal, maxAttempts: DISCOVERY_CALL_ATTEMPTS },
+        );
+        reached = true;
+        const name = chat.pinned_message?.document?.file_name;
+        const parsed = name ? parseShardedManifestName(name) : null;
+        if (parsed)
+          add("pinned", parsed.session, chat.pinned_message?.message_id);
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") return;
+        unreachableErrors.push(e instanceof Error ? e.message : String(e));
+      }
+      if (signal.aborted) return;
+      try {
+        const updates = await callApi<TelegramUpdate[]>(
+          token,
+          "getUpdates",
+          { limit: 100, allowed_updates: ["message", "channel_post"] },
+          { signal, maxAttempts: DISCOVERY_CALL_ATTEMPTS },
+        );
+        reached = true;
+        for (const u of updates ?? []) {
+          const post = u.message ?? u.channel_post;
+          if (String(post?.chat?.id ?? "") !== String(cfg.chatId)) continue;
+          const name = post?.document?.file_name;
+          const parsed = name ? parseShardedManifestName(name) : null;
+          if (parsed) {
+            updatesSeen++;
+            add("updates", parsed.session, post?.message_id);
+          }
+        }
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") return;
+        // A webhook or another reader makes getUpdates fail (409); expired or
+        // consumed history simply returns nothing. Neither is fatal.
+        if (/conflict|webhook/i.test(e instanceof Error ? e.message : ""))
+          updatesBlocked = true;
+        else unreachableErrors.push(e instanceof Error ? e.message : String(e));
+      }
+    };
+    // Bots are independent: ask them all at once so one slow bot can't eat
+    // the whole time budget.
+    await Promise.all(tokens.map(probeBot));
+    if (userCancelled()) throw abortError("Loading backups was cancelled.");
+    if (updatesBlocked)
+      notes.push(
+        "A webhook or another app is using one of the bots, so Telegram won't show its recent messages here.",
+      );
+    if (reached && updatesSeen === 0)
+      notes.push(
+        "No recent backup messages are visible to the bots (Telegram expires or consumes them), so only remembered and pinned backups can be listed.",
+      );
+
+    // 3. Validate candidates newest-first, one session at a time.
+    const bySession = new Map<string, Cand[]>();
+    for (const c of cands.values()) {
+      const list = bySession.get(c.session) ?? [];
+      list.push(c);
+      bySession.set(c.session, list);
+    }
+    const sessions = [...bySession.entries()]
+      .map(([session, list]) => ({
+        session,
+        at: list[0]!.at,
+        list: list.sort((a, b) => b.id - a.id),
+      }))
+      .sort((a, b) => b.at.localeCompare(a.at));
+
+    const stale: StaleBackupPointer[] = [];
+    let timedOut = false;
+    const originsOf = (list: Cand[]) => [
+      ...new Set(list.flatMap((c) => [...c.origins])),
+    ];
+
+    type Outcome =
+      | { kind: "backup"; backup: DiscoveredBackup }
+      | { kind: "stale"; item: StaleBackupPointer; forget: boolean }
+      | { kind: "skipped" };
+
+    /** Checks one backup (one session) against Telegram. Never throws except
+     * for the person's own cancel. */
+    const checkSession = async (
+      session: string,
+      at: string,
+      list: Cand[],
+    ): Promise<Outcome> => {
+      const origins = originsOf(list);
+      // Telegram itself just returned this document (pinned message or a
+      // recent update) with a manifest name: no need to forward-probe it.
+      const direct = list.find(
+        (c) => c.origins.has("pinned") || c.origins.has("updates"),
+      );
+      if (direct)
+        return {
+          kind: "backup",
+          backup: {
+            session,
+            manifestMessageId: direct.id,
+            at,
+            origins,
+            status: "verified",
+          },
+        };
+      const unchecked = (warning: string): Outcome => ({
+        kind: "backup",
+        backup: {
+          session,
+          manifestMessageId: list[0]!.id,
+          at,
+          origins,
+          status: "unverified",
+          warning,
+        },
+      });
+      if (signal.aborted) {
+        if (userCancelled()) throw abortError("Loading backups was cancelled.");
+        timedOut = true;
+        return unchecked(
+          "Not checked — loading took too long. Restore will check it.",
+        );
+      }
+      let firstStale: {
+        c: Cand;
+        code: StalePointerCode;
+        message: string;
+      } | null = null;
+      let transient: string | null = null;
+      for (const c of list) {
+        try {
+          const doc = await readBackupMessage(cfg, c.id, cfg.botToken, signal, {
+            maxAttempts: DISCOVERY_CALL_ATTEMPTS,
+          });
+          reached = true;
+          const parsed = doc ? parseShardedManifestName(doc.fileName) : null;
+          if (!doc || !parsed) {
+            firstStale ??= {
+              c,
+              code: "not-a-manifest",
+              message: `Message #${c.id} isn't a backup manifest file any more (wrong message number, or the message was replaced).`,
+            };
+          } else if (parsed.session !== session) {
+            firstStale ??= {
+              c,
+              code: "wrong-session",
+              message: `Message #${c.id} belongs to a different backup, not the one made at this time.`,
+            };
+          } else {
+            return {
+              kind: "backup",
+              backup: {
+                session,
+                manifestMessageId: c.id,
+                at,
+                origins,
+                status: "verified",
+              },
+            };
+          }
+        } catch (e) {
+          if ((e as Error)?.name === "AbortError") {
+            if (userCancelled())
+              throw abortError("Loading backups was cancelled.");
+            timedOut = true;
+            transient = "Not checked — loading took too long.";
+            break;
+          }
+          if (isMessageGoneError(e)) {
+            reached = true;
+            firstStale ??= {
+              c,
+              code: "message-gone",
+              message: `Message #${c.id} was deleted from this chat, or none of the configured bots can see it.`,
+            };
+          } else {
+            transient = telegramFailureHint(e);
+          }
+        }
+      }
+      if (transient)
+        return unchecked(`${transient} Restore will check it again.`);
+      if (firstStale)
+        return {
+          kind: "stale",
+          forget: firstStale.c.origins.has("device"),
+          item: {
+            session,
+            manifestMessageId: firstStale.c.id,
+            at,
+            origins,
+            code: firstStale.code,
+            message: firstStale.message,
+          },
+        };
+      return { kind: "skipped" };
+    };
+
+    // Check up to 10 newest backups, DISCOVERY_CONCURRENCY at a time, so one
+    // slow message can't hold up the rest. Results keep newest-first order.
+    const toCheck = sessions.slice(0, RECENT_BACKUPS_SHOWN * 2);
+    const outcomes: Outcome[] = new Array(toCheck.length);
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= toCheck.length) return;
+        const { session, at, list } = toCheck[i]!;
+        outcomes[i] = await checkSession(session, at, list);
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(DISCOVERY_CONCURRENCY, toCheck.length) },
+        worker,
+      ),
+    );
+    if (userCancelled()) throw abortError("Loading backups was cancelled.");
+
+    const backups: DiscoveredBackup[] = [];
+    for (const o of outcomes) {
+      if (!o) continue;
+      if (o.kind === "backup") {
+        if (backups.length < RECENT_BACKUPS_SHOWN) backups.push(o.backup);
+      } else if (o.kind === "stale") {
+        stale.push(o.item);
+        // Only drop device-local memory of a pointer Telegram says is bad.
+        if (o.forget) forgetUploadSession(o.item.session);
+      }
+    }
+
+    // Cleanup of earlier leftover forwarded copies runs only now, after the
+    // list is ready, and is time-boxed so it can never delay the result.
+    await Promise.race([
+      sweepForwardedCopies(cfg).catch(() => 0),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
+    const leftoverCopies = pendingForwardedCopies();
+    if (leftoverCopies > 0)
+      notes.push(
+        `${leftoverCopies} temporary forwarded cop${leftoverCopies === 1 ? "y" : "ies"} made while checking backups couldn't be deleted from the chat. Give the bots permission to delete messages there, or delete the "Forwarded from" copies by hand.`,
+      );
+    if (timedOut)
+      notes.push(
+        "Loading hit its time limit. Backups marked “not checked” are still offered; tap Refresh to try again.",
+      );
+    if (!reached && unreachableErrors.length && !backups.length)
+      throw new Error(unreachableErrors[unreachableErrors.length - 1]);
+    if (!backups.length) notes.push(TELEGRAM_FALLBACK_NOTE);
+    else if (stale.length) notes.push(TELEGRAM_FALLBACK_NOTE);
+    return {
+      backups: backups.sort(
+        (a, b) =>
+          b.at.localeCompare(a.at) || b.manifestMessageId - a.manifestMessageId,
+      ),
+      stale,
+      telegramReachable: reached,
+      timedOut,
+      leftoverCopies,
+      notes,
+    };
+  } finally {
+    deadline.dispose();
+  }
+}
+
+function telegramFailureHint(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  if (/429|too many|retry/i.test(msg))
+    return "Telegram is rate-limiting requests.";
+  if (/token|can't post|forbidden/i.test(msg)) return msg;
+  return "Telegram couldn't be reached.";
+}
+
+/**
+ * Compatibility wrapper: the verified/unverified backups only (newest five).
+ * New code should call `discoverTelegramBackups` to also get stale pointers
+ * and the limitation notes.
  */
 export async function listRecentTelegramBackups(
   cfg: TelegramConfig,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; deadlineMs?: number } = {},
 ): Promise<RecentTelegramBackup[]> {
-  if (!isTelegramConfigured(cfg))
-    throw new Error("Add the bot token and chat ID first.");
-  await validateRemotePointers(cfg);
-  const candidates: RecentTelegramBackup[] = [];
-  const add = (session: string, id: number | undefined, at?: string) => {
-    if (typeof id !== "number") return;
-    candidates.push({
-      session,
-      manifestMessageId: id,
-      at: sessionToIso(session) ?? at ?? new Date(0).toISOString(),
-    });
-  };
-  // 1. This device's own upload history (manifest is always the last message).
-  for (const h of [readLastUpload(), ...readUploadHistory()]) {
-    if (h?.session && h.messageIds?.length)
-      add(h.session, h.messageIds.at(-1), h.at);
-  }
-  const tokens = [cfg.botToken, ...(cfg.extraBotTokens ?? []).filter(Boolean)];
-  let reached = false;
-  let lastError: unknown = null;
-  for (const token of tokens) {
-    // 2. The pinned backup (always the newest successful upload).
-    try {
-      const chat = await callApi<{
-        pinned_message?: TelegramUpdate["message"];
-      }>(token, "getChat", { chat_id: cfg.chatId }, { signal: options.signal });
-      reached = true;
-      const doc = chat.pinned_message?.document;
-      const parsed = doc?.file_name
-        ? parseShardedManifestName(doc.file_name)
-        : null;
-      if (parsed) add(parsed.session, chat.pinned_message?.message_id);
-    } catch (e) {
-      lastError = e;
-    }
-    // 3. Recent chat updates still visible to the bot (read-only, no offset).
-    try {
-      const updates = await callApi<TelegramUpdate[]>(
-        token,
-        "getUpdates",
-        { limit: 100, allowed_updates: ["message", "channel_post"] },
-        { signal: options.signal },
-      );
-      reached = true;
-      for (const u of updates ?? []) {
-        const post = u.message ?? u.channel_post;
-        if (String(post?.chat?.id ?? "") !== String(cfg.chatId)) continue;
-        const name = post?.document?.file_name;
-        const parsed = name ? parseShardedManifestName(name) : null;
-        if (parsed) add(parsed.session, post?.message_id);
-      }
-    } catch (e) {
-      // A webhook or another reader can block getUpdates; not fatal.
-      lastError = e;
-    }
-  }
-  const picked = pickRecentBackups(candidates, RECENT_BACKUPS_SHOWN * 2);
-  // Drop remembered entries whose manifest no longer exists in the chat.
-  const recent: RecentTelegramBackup[] = [];
-  for (const b of picked) {
-    if (recent.length >= RECENT_BACKUPS_SHOWN) break;
-    if (reached) {
-      try {
-        await readBackupMessage(cfg, b.manifestMessageId, cfg.botToken);
-      } catch (e) {
-        if (isMessageGoneError(e)) {
-          forgetUploadSession(b.session);
-          continue;
-        }
-      }
-    }
-    recent.push(b);
-  }
-  if (!recent.length && !reached && lastError) throw lastError;
-  return recent;
+  const result = await discoverTelegramBackups(cfg, options);
+  return result.backups.map(({ session, manifestMessageId, at }) => ({
+    session,
+    manifestMessageId,
+    at,
+  }));
 }

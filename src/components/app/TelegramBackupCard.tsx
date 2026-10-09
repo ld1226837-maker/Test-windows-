@@ -68,9 +68,12 @@ import {
   fetchLatestShardedFullBackup,
   validateTelegramConfig,
   fetchShardedFullBackupByMessage,
-  listRecentTelegramBackups,
+  discoverTelegramBackups,
   forgetAllTelegramPointers,
-  isBackupMessageMissing,
+  isStaleSelectionError,
+  type DiscoveredBackup,
+  type DiscoveryResult,
+  type BackupOrigin,
   type RecentTelegramBackup,
   restoreFullBackupSharded,
   writeTelegramConfig,
@@ -134,6 +137,15 @@ const progressLabel = (phase: string, done?: number, total?: number) => {
   return done != null && total != null ? `${base} (${done}/${total})` : base;
 };
 
+function originLabel(b: DiscoveredBackup): string {
+  const names: Record<BackupOrigin, string> = {
+    device: "remembered on this device",
+    pinned: "pinned in chat",
+    updates: "seen in recent chat",
+  };
+  return b.origins.map((o) => names[o]).join(", ");
+}
+
 export function TelegramBackupCard() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -174,18 +186,61 @@ export function TelegramBackupCard() {
     useState<Partial<TelegramConfig> | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [messageLocator, setMessageLocator] = useState("");
-  const [recent, setRecent] = useState<RecentTelegramBackup[] | null>(null);
+  const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
+  const discoverAbort = useRef<AbortController | null>(null);
 
+  /** Bounded (30 s) and cancellable; a failure never wipes the last list. */
   const loadRecent = async () => {
+    if (discoverAbort.current) return; // one load at a time
+    const controller = new AbortController();
+    discoverAbort.current = controller;
     setRecentLoading(true);
+    setRecentError(null);
     try {
-      setRecent(await listRecentTelegramBackups(cfg));
+      setDiscovery(
+        await discoverTelegramBackups(cfg, { signal: controller.signal }),
+      );
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      if (e instanceof DOMException && e.name === "AbortError")
+        setRecentError(
+          "Loading backups was cancelled. Tap Refresh to try again.",
+        );
+      else
+        setRecentError(
+          `${redact(e instanceof Error ? e.message : String(e))} Tap Refresh to retry, paste a message link, or restore from a saved file.`,
+        );
     } finally {
+      discoverAbort.current = null;
       setRecentLoading(false);
     }
+  };
+  const cancelLoadRecent = () => discoverAbort.current?.abort();
+  useEffect(() => () => discoverAbort.current?.abort(), []);
+
+  /** Moves a backup the restore just proved unusable out of the selectable list. */
+  const markSelectionStale = (messageId: number, why: string) => {
+    setDiscovery((d) => {
+      if (!d) return d;
+      const hit = d.backups.find((b) => b.manifestMessageId === messageId);
+      if (!hit) return d;
+      return {
+        ...d,
+        backups: d.backups.filter((b) => b !== hit),
+        stale: [
+          ...d.stale,
+          {
+            session: hit.session,
+            manifestMessageId: hit.manifestMessageId,
+            at: hit.at,
+            origins: hit.origins,
+            code: "message-gone",
+            message: why,
+          },
+        ],
+      };
+    });
   };
 
   /** Restore one backup picked from the recent list (asks passphrase first). */
@@ -253,15 +308,18 @@ export function TelegramBackupCard() {
       );
       if (!(e instanceof DOMException && e.name === "AbortError"))
         toast.error(redact(errorMessage(e)));
-      // The backup message is gone or the number was wrong: close the
-      // passphrase box and show the recent backups so one can be picked.
+      // The picked message is gone / wrong / not a manifest: it must neither
+      // stay selected nor block the list. Clear it, mark it stale, close the
+      // passphrase box and refresh so another backup can be chosen.
       if (
         (label.startsWith("fetch") || label.startsWith("unlock")) &&
-        (isBackupMessageMissing(e) ||
-          /isn't a backup in this chat|not the backup's main file|No complete (sharded )?backup found/i.test(
-            errorMessage(e),
-          ))
+        (isStaleSelectionError(e) ||
+          /No complete (sharded )?backup found/i.test(errorMessage(e)))
       ) {
+        const id = Number(messageLocator.trim().match(/\d+$/)?.[0]);
+        if (Number.isSafeInteger(id))
+          markSelectionStale(id, redact(errorMessage(e)));
+        setMessageLocator("");
         setTgPrompt(null);
         setPromptError(null);
         void loadRecent();
@@ -1001,8 +1059,17 @@ export function TelegramBackupCard() {
                   onClick={() => void loadRecent()}
                 >
                   <History className="mr-1 h-4 w-4" />
-                  {recentLoading ? "Loading backups…" : "Last 5 backups"}
+                  {recentLoading
+                    ? "Loading backups…"
+                    : discovery || recentError
+                      ? "Refresh list"
+                      : "Last 5 backups"}
                 </Button>
+                {recentLoading && (
+                  <Button variant="ghost" onClick={cancelLoadRecent}>
+                    Cancel
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   disabled={busy !== null || recentLoading}
@@ -1014,7 +1081,8 @@ export function TelegramBackupCard() {
                     )
                       return;
                     forgetAllTelegramPointers();
-                    setRecent(null);
+                    setDiscovery(null);
+                    setRecentError(null);
                     setMessageLocator("");
                     toast.success(
                       "Telegram backup links reset. Tap 'Backup now' to make a new backup.",
@@ -1023,17 +1091,23 @@ export function TelegramBackupCard() {
                 >
                   Reset Telegram backup links
                 </Button>
-                {recent !== null && (
+                {recentError && (
+                  <p role="alert" className="w-full text-sm text-destructive">
+                    {recentError}
+                  </p>
+                )}
+                {discovery !== null && (
                   <div
                     className="w-full space-y-2"
                     aria-label="Last 5 Telegram backups"
                   >
-                    {recent.length === 0 ? (
+                    {discovery.backups.length === 0 ? (
                       <p className="text-sm text-muted-foreground">
-                        No backups found in this Telegram chat yet.
+                        No restorable backup was confirmed in this Telegram
+                        chat.
                       </p>
                     ) : (
-                      recent.map((b) => (
+                      discovery.backups.map((b) => (
                         <button
                           key={b.session}
                           type="button"
@@ -1046,8 +1120,16 @@ export function TelegramBackupCard() {
                               {new Date(b.at).toLocaleString()}
                             </span>
                             <span className="block text-xs text-muted-foreground">
-                              Message #{b.manifestMessageId}
+                              Message #{b.manifestMessageId} · {originLabel(b)}
+                              {b.status === "unverified"
+                                ? " · not checked"
+                                : ""}
                             </span>
+                            {b.warning && (
+                              <span className="block text-xs text-amber-600">
+                                {b.warning}
+                              </span>
+                            )}
                           </span>
                           <span className="flex items-center text-primary">
                             <CloudDownload className="mr-1 h-4 w-4" /> Restore
@@ -1055,6 +1137,23 @@ export function TelegramBackupCard() {
                         </button>
                       ))
                     )}
+                    {discovery.stale.map((x) => (
+                      <div
+                        key={`${x.session}#${x.manifestMessageId}`}
+                        role="status"
+                        className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
+                      >
+                        <span className="block font-medium">
+                          {new Date(x.at).toLocaleString()} — can't be restored
+                        </span>
+                        {x.message}
+                      </div>
+                    ))}
+                    {discovery.notes.map((n) => (
+                      <p key={n} className="text-xs text-muted-foreground">
+                        {n}
+                      </p>
+                    ))}
                   </div>
                 )}
                 <Button
