@@ -293,43 +293,78 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
 export const SURFACE_REGISTRY: SurfaceDef[] = [
   {
     surfaceId: "surface.customer-detail",
-    label: "Customer details pop-up",
+    label: "Customer details (pop-up and side pane)",
     parts: [
-      p("surface.customer-detail.identity", "Name & phone", "summary", true),
-      p("surface.customer-detail.totals", "Spend & dues totals", "summary"),
-      p("surface.customer-detail.favorites", "Favourite items", "list"),
-      p("surface.customer-detail.history", "Bill & booking history", "list"),
-      p("surface.customer-detail.actions", "Action buttons", "action", true),
+      p(
+        "surface.customer-detail.identity",
+        "Name, tag & phone",
+        "summary",
+        true,
+      ),
+      p("surface.customer-detail.teams", "Teams & players", "list"),
+      p(
+        "surface.customer-detail.totals",
+        "Visits, spent & pending totals",
+        "summary",
+      ),
+      p("surface.customer-detail.statement", "Customer statement", "action"),
+      p(
+        "surface.customer-detail.dues",
+        "Settle all & pending breakdown",
+        "list",
+        true,
+      ),
+      p("surface.customer-detail.tab", "Due tab card", "panel"),
+      p("surface.customer-detail.actions", "Call & WhatsApp", "action"),
+      p(
+        "surface.customer-detail.history",
+        "Bills, bookings & snack orders",
+        "list",
+      ),
     ],
   },
   {
     surfaceId: "surface.merge-bill",
-    label: "Merge bill pop-up",
+    label: "Merge into one bill pop-up",
     parts: [
       p("surface.merge-bill.explainer", "Explanation text", "summary"),
-      p("surface.merge-bill.candidates", "Bills to merge", "list", true),
-      p("surface.merge-bill.preview", "Merged total preview", "summary"),
-      p("surface.merge-bill.actions", "Confirm & cancel", "action", true),
+      p("surface.merge-bill.customer", "Customer name & phone", "field", true),
+      p(
+        "surface.merge-bill.candidates",
+        "Bookings & snack bills to merge",
+        "list",
+        true,
+      ),
+      p(
+        "surface.merge-bill.preview",
+        "Due-tab option & total preview",
+        "summary",
+      ),
+      p("surface.merge-bill.actions", "Generate bill button", "action", true),
     ],
   },
   {
     surfaceId: "surface.merge-customers",
-    label: "Merge customers pop-up",
+    label: "Merge duplicate customers pop-up",
     parts: [
       p("surface.merge-customers.explainer", "Explanation text", "summary"),
       p("surface.merge-customers.keep", "Customer to keep", "field", true),
       p("surface.merge-customers.merge", "Customers to merge in", "list", true),
+      p("surface.merge-customers.final", "Final name & phone", "field", true),
       p("surface.merge-customers.actions", "Confirm & cancel", "action", true),
     ],
   },
   {
     surfaceId: "surface.archive-year",
-    label: "Archive year pop-up",
+    label: "Archive old year pop-up",
     parts: [
-      p("surface.archive-year.explainer", "Explanation text", "summary"),
-      p("surface.archive-year.year", "Year picker", "field", true),
-      p("surface.archive-year.summary", "What will be archived", "summary"),
-      p("surface.archive-year.actions", "Confirm & cancel", "action", true),
+      p(
+        "surface.archive-year.explainer",
+        "What will be archived",
+        "summary",
+        true,
+      ),
+      p("surface.archive-year.actions", "Not now & archive", "action", true),
     ],
   },
   {
@@ -353,6 +388,65 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
         "action",
         true,
       ),
+    ],
+  },
+  {
+    surfaceId: "surface.connection-test",
+    label: "Telegram connection test pop-up",
+    parts: [
+      p("surface.connection-test.explainer", "Explanation text", "summary"),
+      p("surface.connection-test.steps", "Step-by-step checks", "list", true),
+      p("surface.connection-test.result", "Result message", "summary"),
+      p("surface.connection-test.actions", "Close & run again", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.restore-confirm",
+    label: "Telegram restore confirmation pop-up",
+    parts: [
+      p("surface.restore-confirm.summary", "What will change", "summary", true),
+      p("surface.restore-confirm.photos", "Receipt photos note", "summary"),
+      p(
+        "surface.restore-confirm.breakdown",
+        "Table-by-table breakdown",
+        "list",
+      ),
+      p("surface.restore-confirm.actions", "Cancel & confirm", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.telegram-qr",
+    label: "Telegram setup QR pop-up",
+    parts: [
+      p("surface.telegram-qr.code", "QR code", "summary", true),
+      p(
+        "surface.telegram-qr.instructions",
+        "How to use it (and the bot-token warning)",
+        "summary",
+        true,
+      ),
+    ],
+  },
+  {
+    surfaceId: "surface.scan-confirm",
+    label: "Scanned Telegram details pop-up",
+    parts: [
+      p(
+        "surface.scan-confirm.details",
+        "Token & chat ID preview",
+        "summary",
+        true,
+      ),
+      p("surface.scan-confirm.actions", "Cancel & use details", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.qr-scanner",
+    label: "QR scanner pop-up",
+    parts: [
+      p("surface.qr-scanner.camera", "Camera view", "panel", true),
+      p("surface.qr-scanner.manual", "Manual entry box", "field", true),
+      p("surface.qr-scanner.tools", "Scan options & buttons", "action", true),
     ],
   },
 ];

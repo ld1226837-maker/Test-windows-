@@ -21,10 +21,13 @@ import {
   yearRowCount,
 } from "@/lib/archive";
 import { RETAINED_YEARS } from "@/lib/years";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 
 /**
  * Watches for a year beyond the retention window and asks before archiving it.
  * Nothing is exported or deleted until the user confirms.
+ *
+ * Registered in Layout & arrangement as `surface.archive-year`.
  */
 export function ArchiveYearDialog() {
   const qc = useQueryClient();
@@ -79,27 +82,33 @@ export function ArchiveYearDialog() {
           <AlertDialogTitle className="flex items-center gap-2">
             <Archive className="h-4 w-4" /> Archive {year} data?
           </AlertDialogTitle>
-          <AlertDialogDescription>
-            The app keeps {RETAINED_YEARS} years of data. {year} has{" "}
-            {rows.toLocaleString("en-IN")} records. On confirm they are sent to
-            your configured Telegram chat and downloaded as “Turf bookings and
-            sales - {year}.db” for your Documents folder, and only then removed
-            from the app. If Telegram isn't set up yet, or either step fails,
-            nothing is deleted.
-          </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Not now</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={(e) => {
-              e.preventDefault();
-              void run();
-            }}
-            disabled={busy}
-          >
-            {busy ? "Archiving…" : "Archive & remove"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
+        <LayoutParts surfaceId="surface.archive-year" className="space-y-4">
+          <LayoutPart id="surface.archive-year.explainer">
+            <AlertDialogDescription>
+              The app keeps {RETAINED_YEARS} years of data. {year} has{" "}
+              {rows.toLocaleString("en-IN")} records. On confirm they are sent
+              to your configured Telegram chat and downloaded as “Turf bookings
+              and sales - {year}.db” for your Documents folder, and only then
+              removed from the app. If Telegram isn't set up yet, or either step
+              fails, nothing is deleted.
+            </AlertDialogDescription>
+          </LayoutPart>
+          <LayoutPart id="surface.archive-year.actions">
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy}>Not now</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  void run();
+                }}
+                disabled={busy}
+              >
+                {busy ? "Archiving…" : "Archive & remove"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </LayoutPart>
+        </LayoutParts>
       </AlertDialogContent>
     </AlertDialog>
   );

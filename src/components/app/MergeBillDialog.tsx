@@ -23,6 +23,7 @@ import { printBillPdf } from "@/lib/receipt";
 import { useSnackSales, useTurfBookings } from "@/lib/ops";
 import { useTabEntries } from "@/lib/tabs";
 import { CustomerFields } from "./CustomerFields";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 import { errorMessage } from "@/lib/utils";
 
 /**
@@ -176,119 +177,138 @@ export function MergeBillDialog() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Merge into one bill</DialogTitle>
-          <DialogDescription>
-            Pick turf bookings and snack bills, then generate a single bill
-            saved here.
-          </DialogDescription>
         </DialogHeader>
 
-        <CustomerFields
-          name={name}
-          phone={phone}
-          onChange={({ name: n, phone: p }) => {
-            setName(n);
-            setPhone(p);
-          }}
-        />
-
-        <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">Turf bookings</Label>
-          {openBookings.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Nothing left to merge.
-            </p>
-          )}
-          {openBookings.slice(0, showCount).map((b) => (
-            <label key={b.id} className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={turfIds.includes(b.id)}
-                onCheckedChange={() => toggle(turfIds, setTurfIds, b.id)}
-              />
-              <span className="min-w-0 flex-1 truncate">
-                {b.booking_no} · {b.customer_name} · {formatDMY(b.booking_date)}
-              </span>
-              <span className="font-medium">{money(b.total_amount)}</span>
-            </label>
-          ))}
-        </div>
-
-        <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">Snack bills</Label>
-          {openSales.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Nothing left to merge.
-            </p>
-          )}
-          {openSales.slice(0, showCount).map((s) => (
-            <label key={s.id} className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={snackIds.includes(s.id)}
-                onCheckedChange={() => toggle(snackIds, setSnackIds, s.id)}
-              />
-              <span className="min-w-0 flex-1 truncate">
-                {s.bill_no}
-                {s.customer_name ? ` · ${s.customer_name}` : ""} ·{" "}
-                {formatDMY(s.sale_date)}
-              </span>
-              <span className="font-medium">{money(s.total)}</span>
-            </label>
-          ))}
-          {(openBookings.length > showCount ||
-            openSales.length > showCount) && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="w-full"
-              onClick={() => setShowCount((n) => n + 5)}
-            >
-              Show 5 more bills
-            </Button>
-          )}
-        </div>
-
-        <div className="space-y-2 rounded-2xl border p-3">
-          <label className="flex items-start gap-2 text-sm">
-            <Checkbox
-              checked={putOnTab}
-              onCheckedChange={(v) => setPutOnTab(Boolean(v))}
-              disabled={!name.trim()}
+        <LayoutParts surfaceId="surface.merge-bill" className="space-y-4">
+          <LayoutPart id="surface.merge-bill.explainer">
+            <DialogDescription>
+              Pick turf bookings and snack bills, then generate a single bill
+              saved here.
+            </DialogDescription>
+          </LayoutPart>
+          <LayoutPart id="surface.merge-bill.customer">
+            <CustomerFields
+              name={name}
+              phone={phone}
+              onChange={({ name: n, phone: p }) => {
+                setName(n);
+                setPhone(p);
+              }}
             />
-            <span className="flex-1">
-              Put the balance on {name.trim() || "the customer"}'s due tab
-              <span className="block text-xs text-muted-foreground">
-                The merged bill is settled as “On tab”, so the due shows only in
-                Outstanding — never in both places.
-              </span>
-            </span>
-          </label>
-          {items.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {money(preview.total)} total · {money(preview.collected)} already
-              collected · {money(preview.outstanding)} still owed
-              {preview.alreadyOnTab > 0 && (
-                <> · {money(preview.alreadyOnTab)} of it already on tab</>
-              )}
-              {putOnTab ? (
-                <>
-                  {" "}
-                  → tab changes by {preview.tabDelta >= 0 ? "+" : "−"}
-                  {money(Math.abs(preview.tabDelta))}
-                </>
-              ) : (
-                preview.alreadyOnTab > 0 && (
-                  <> → taken off the tab, the bill carries the due</>
-                )
-              )}
-            </p>
-          )}
-        </div>
+          </LayoutPart>
+          <LayoutPart id="surface.merge-bill.candidates">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  Turf bookings
+                </Label>
+                {openBookings.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Nothing left to merge.
+                  </p>
+                )}
+                {openBookings.slice(0, showCount).map((b) => (
+                  <label key={b.id} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={turfIds.includes(b.id)}
+                      onCheckedChange={() => toggle(turfIds, setTurfIds, b.id)}
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {b.booking_no} · {b.customer_name} ·{" "}
+                      {formatDMY(b.booking_date)}
+                    </span>
+                    <span className="font-medium">{money(b.total_amount)}</span>
+                  </label>
+                ))}
+              </div>
 
-        <DialogFooter>
-          <Button className="h-12 w-full" onClick={save} disabled={saving}>
-            <ReceiptText className="size-5" /> Generate bill · {money(total)}
-          </Button>
-        </DialogFooter>
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  Snack bills
+                </Label>
+                {openSales.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Nothing left to merge.
+                  </p>
+                )}
+                {openSales.slice(0, showCount).map((s) => (
+                  <label key={s.id} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={snackIds.includes(s.id)}
+                      onCheckedChange={() =>
+                        toggle(snackIds, setSnackIds, s.id)
+                      }
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {s.bill_no}
+                      {s.customer_name ? ` · ${s.customer_name}` : ""} ·{" "}
+                      {formatDMY(s.sale_date)}
+                    </span>
+                    <span className="font-medium">{money(s.total)}</span>
+                  </label>
+                ))}
+                {(openBookings.length > showCount ||
+                  openSales.length > showCount) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setShowCount((n) => n + 5)}
+                  >
+                    Show 5 more bills
+                  </Button>
+                )}
+              </div>
+            </div>
+          </LayoutPart>
+          <LayoutPart id="surface.merge-bill.preview">
+            <div className="space-y-2 rounded-2xl border p-3">
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  checked={putOnTab}
+                  onCheckedChange={(v) => setPutOnTab(Boolean(v))}
+                  disabled={!name.trim()}
+                />
+                <span className="flex-1">
+                  Put the balance on {name.trim() || "the customer"}'s due tab
+                  <span className="block text-xs text-muted-foreground">
+                    The merged bill is settled as “On tab”, so the due shows
+                    only in Outstanding — never in both places.
+                  </span>
+                </span>
+              </label>
+              {items.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {money(preview.total)} total · {money(preview.collected)}{" "}
+                  already collected · {money(preview.outstanding)} still owed
+                  {preview.alreadyOnTab > 0 && (
+                    <> · {money(preview.alreadyOnTab)} of it already on tab</>
+                  )}
+                  {putOnTab ? (
+                    <>
+                      {" "}
+                      → tab changes by {preview.tabDelta >= 0 ? "+" : "−"}
+                      {money(Math.abs(preview.tabDelta))}
+                    </>
+                  ) : (
+                    preview.alreadyOnTab > 0 && (
+                      <> → taken off the tab, the bill carries the due</>
+                    )
+                  )}
+                </p>
+              )}
+            </div>
+          </LayoutPart>
+          <LayoutPart id="surface.merge-bill.actions">
+            <DialogFooter>
+              <Button className="h-12 w-full" onClick={save} disabled={saving}>
+                <ReceiptText className="size-5" /> Generate bill ·{" "}
+                {money(total)}
+              </Button>
+            </DialogFooter>
+          </LayoutPart>
+        </LayoutParts>
       </DialogContent>
     </Dialog>
   );

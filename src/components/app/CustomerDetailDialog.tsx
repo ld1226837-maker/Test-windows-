@@ -59,6 +59,7 @@ import { RecordActionRow } from "./RecordActionRow";
 import { CustomerTabCard } from "./CustomerTabCard";
 import { CollectPaymentDialog } from "./CollectPaymentDialog";
 import { CustomerTeams } from "./CustomerTeams";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 import { errorMessage } from "@/lib/utils";
 
 type Props = {
@@ -436,79 +437,93 @@ export function CustomerDetailContent({
   if (!name || !data) return null;
 
   return (
-    <div className="space-y-4">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-lg font-semibold leading-tight">
-          {name}
-        </span>
-        <Badge
-          variant={data.visits >= 5 ? "default" : "secondary"}
-          className="shrink-0"
-        >
-          {customerTag(data.visits)}
-        </Badge>
-      </div>
-      <p className="-mt-2 text-sm text-muted-foreground">
-        {phone || "No phone saved"}
-      </p>
-      <CustomerTeams
-        name={name}
-        phone={phone}
-        {...(customerId ? { customerId } : {})}
-      />
-
-      <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-3">
-        <Metric label="Visits" value={String(data.visits)} />
-        <Metric label="Total spent" value={money(data.spent)} />
-        <Metric
-          label="Pending"
-          value={money(data.dues.total)}
-          danger={data.dues.total > 0}
-        />
-      </div>
-
-      {statementDoc && data.visits > 0 && (
-        <div className="frost-well flex items-center justify-between gap-2 rounded-xl border p-3">
-          <p className="micro-label">Customer statement</p>
-          <div className="flex gap-1.5">
-            <RecordActionRow
-              doc={statementDoc}
-              phone={phone}
-              section={INVOICE_SECTIONS.dues}
-              noun="customer statement"
-              size="sm"
-            />
+    <LayoutParts surfaceId="surface.customer-detail" className="space-y-4">
+      <LayoutPart id="surface.customer-detail.identity">
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-lg font-semibold leading-tight">
+              {name}
+            </span>
+            <Badge
+              variant={data.visits >= 5 ? "default" : "secondary"}
+              className="shrink-0"
+            >
+              {customerTag(data.visits)}
+            </Badge>
           </div>
+          <p className="text-sm text-muted-foreground">
+            {phone || "No phone saved"}
+          </p>
         </div>
-      )}
+      </LayoutPart>
+      <LayoutPart id="surface.customer-detail.teams">
+        <CustomerTeams
+          name={name}
+          phone={phone}
+          {...(customerId ? { customerId } : {})}
+        />
+      </LayoutPart>
 
-      {data.dues.total > 0 && (
-        <Button
-          className="w-full"
-          variant="outline"
-          disabled={
-            collectBooking.isPending || collectBill.isPending || settlingAll
-          }
-          onClick={() => setSettleAllOpen(true)}
-        >
-          <CheckCircle2 className="mr-1 size-4" /> Settle all{" "}
-          {money(data.dues.total)}
-        </Button>
-      )}
-
-      {data.dues.lines.length > 0 && (
-        <div className="frost-well space-y-2 rounded-xl border p-3">
-          <p className="micro-label">Pending breakdown</p>
-          {data.dues.lines.map((l, i) => (
-            <PendingLineRow
-              key={`${l.kind}-${l.id ?? l.label}-${i}`}
-              line={l}
-              busy={collectBooking.isPending || collectBill.isPending}
-              onOpenCollect={(line, amount) => setLineDialog({ line, amount })}
-            />
-          ))}
+      <LayoutPart id="surface.customer-detail.totals">
+        <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-3">
+          <Metric label="Visits" value={String(data.visits)} />
+          <Metric label="Total spent" value={money(data.spent)} />
+          <Metric
+            label="Pending"
+            value={money(data.dues.total)}
+            danger={data.dues.total > 0}
+          />
         </div>
-      )}
+      </LayoutPart>
+
+      <LayoutPart id="surface.customer-detail.statement">
+        {statementDoc && data.visits > 0 && (
+          <div className="frost-well flex items-center justify-between gap-2 rounded-xl border p-3">
+            <p className="micro-label">Customer statement</p>
+            <div className="flex gap-1.5">
+              <RecordActionRow
+                doc={statementDoc}
+                phone={phone}
+                section={INVOICE_SECTIONS.dues}
+                noun="customer statement"
+                size="sm"
+              />
+            </div>
+          </div>
+        )}
+      </LayoutPart>
+
+      <LayoutPart id="surface.customer-detail.dues">
+        {data.dues.total > 0 && (
+          <Button
+            className="w-full"
+            variant="outline"
+            disabled={
+              collectBooking.isPending || collectBill.isPending || settlingAll
+            }
+            onClick={() => setSettleAllOpen(true)}
+          >
+            <CheckCircle2 className="mr-1 size-4" /> Settle all{" "}
+            {money(data.dues.total)}
+          </Button>
+        )}
+
+        {data.dues.lines.length > 0 && (
+          <div className="frost-well space-y-2 rounded-xl border p-3">
+            <p className="micro-label">Pending breakdown</p>
+            {data.dues.lines.map((l, i) => (
+              <PendingLineRow
+                key={`${l.kind}-${l.id ?? l.label}-${i}`}
+                line={l}
+                busy={collectBooking.isPending || collectBill.isPending}
+                onOpenCollect={(line, amount) =>
+                  setLineDialog({ line, amount })
+                }
+              />
+            ))}
+          </div>
+        )}
+      </LayoutPart>
 
       <CollectPaymentDialog
         open={lineDialog !== null}
@@ -534,107 +549,115 @@ export function CustomerDetailContent({
         onConfirm={(entries) => settleAll(entries)}
       />
 
-      <CustomerTabCard
-        name={name ?? ""}
-        phone={phone}
-        autoDue={data.dues.bookings + data.dues.bills}
-      />
+      <LayoutPart id="surface.customer-detail.tab">
+        <CustomerTabCard
+          name={name ?? ""}
+          phone={phone}
+          autoDue={data.dues.bookings + data.dues.bills}
+        />
+      </LayoutPart>
 
-      {phone && (
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="h-12 flex-1"
-            onClick={() => void callNumber(phone)}
-          >
-            <Phone className="mr-1 size-4" /> Call
-          </Button>
-          <Button
-            type="button"
-            className="h-12 flex-1"
-            onClick={() =>
-              void openWhatsApp(
-                phone,
-                data.dues.total > 0
-                  ? `Hi ${name}, your pending balance is ${money(data.dues.total)}. Thank you!`
-                  : `Hi ${name}, thanks for visiting!`,
-              )
-            }
-          >
-            <MessageCircle className="mr-1 size-4" /> WhatsApp
-          </Button>
+      <LayoutPart id="surface.customer-detail.actions">
+        {phone && (
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 flex-1"
+              onClick={() => void callNumber(phone)}
+            >
+              <Phone className="mr-1 size-4" /> Call
+            </Button>
+            <Button
+              type="button"
+              className="h-12 flex-1"
+              onClick={() =>
+                void openWhatsApp(
+                  phone,
+                  data.dues.total > 0
+                    ? `Hi ${name}, your pending balance is ${money(data.dues.total)}. Thank you!`
+                    : `Hi ${name}, thanks for visiting!`,
+                )
+              }
+            >
+              <MessageCircle className="mr-1 size-4" /> WhatsApp
+            </Button>
+          </div>
+        )}
+      </LayoutPart>
+
+      <LayoutPart id="surface.customer-detail.history">
+        <div className="space-y-4">
+          <Section title="Bills">
+            {data.myBills.length === 0 ? (
+              <Empty />
+            ) : (
+              data.myBills
+                .slice(0, 20)
+                .map((b) => (
+                  <Row
+                    key={b.id}
+                    left={`${b.invoice_no} · ${formatDMY(b.bill_date)}`}
+                    right={money(billGrossTotal(b))}
+                    note={
+                      billDue(b, myEntries) > 0
+                        ? `Paid ${money(b.status === "paid" ? billGrossTotal(b) : b.amount_paid)} · Due ${money(billDue(b, myEntries))}`
+                        : billMovedToDues(b, myEntries)
+                          ? `On tab · ${dueNoForRef(myEntries, TAB_REF_BILL, b.id, b.invoice_no, b.bill_date)}`
+                          : b.status
+                    }
+                  />
+                ))
+            )}
+          </Section>
+
+          <Section title="Turf bookings">
+            {data.myBookings.length === 0 ? (
+              <Empty />
+            ) : (
+              data.myBookings.slice(0, 20).map((b) => {
+                const due = bookingDue(b, myEntries);
+                return (
+                  <Row
+                    key={b.id}
+                    left={`${b.booking_no} · ${formatDMY(b.booking_date)}${
+                      b.start_time ? ` · ${b.start_time}` : ""
+                    }`}
+                    right={money(b.total_amount)}
+                    note={
+                      b.merged_into_bill_id
+                        ? "Merged into bill"
+                        : due > 0
+                          ? // Real cash taken, never `advance_paid` at face
+                            // value — a balance moved to dues inflates that.
+                            `Paid ${money(bookingCashCollected(b, myEntries))} · Due ${money(due)}`
+                          : b.status
+                    }
+                  />
+                );
+              })
+            )}
+          </Section>
+
+          <Section title="Snack orders">
+            {data.mySales.length === 0 ? (
+              <Empty />
+            ) : (
+              data.mySales
+                .slice(0, 20)
+                .map((s) => (
+                  <Row
+                    key={s.id}
+                    left={`${s.bill_no} · ${formatDMY(s.sale_date)}`}
+                    right={money(s.total)}
+                    note={saleStateLabel(s) ?? s.payment_mode}
+                  />
+                ))
+            )}
+          </Section>
         </div>
-      )}
-
-      <Section title="Bills">
-        {data.myBills.length === 0 ? (
-          <Empty />
-        ) : (
-          data.myBills
-            .slice(0, 20)
-            .map((b) => (
-              <Row
-                key={b.id}
-                left={`${b.invoice_no} · ${formatDMY(b.bill_date)}`}
-                right={money(billGrossTotal(b))}
-                note={
-                  billDue(b, myEntries) > 0
-                    ? `Paid ${money(b.status === "paid" ? billGrossTotal(b) : b.amount_paid)} · Due ${money(billDue(b, myEntries))}`
-                    : billMovedToDues(b, myEntries)
-                      ? `On tab · ${dueNoForRef(myEntries, TAB_REF_BILL, b.id, b.invoice_no, b.bill_date)}`
-                      : b.status
-                }
-              />
-            ))
-        )}
-      </Section>
-
-      <Section title="Turf bookings">
-        {data.myBookings.length === 0 ? (
-          <Empty />
-        ) : (
-          data.myBookings.slice(0, 20).map((b) => {
-            const due = bookingDue(b, myEntries);
-            return (
-              <Row
-                key={b.id}
-                left={`${b.booking_no} · ${formatDMY(b.booking_date)}${
-                  b.start_time ? ` · ${b.start_time}` : ""
-                }`}
-                right={money(b.total_amount)}
-                note={
-                  b.merged_into_bill_id
-                    ? "Merged into bill"
-                    : due > 0
-                      ? // Real cash taken, never `advance_paid` at face
-                        // value — a balance moved to dues inflates that.
-                        `Paid ${money(bookingCashCollected(b, myEntries))} · Due ${money(due)}`
-                      : b.status
-                }
-              />
-            );
-          })
-        )}
-      </Section>
-
-      <Section title="Snack orders">
-        {data.mySales.length === 0 ? (
-          <Empty />
-        ) : (
-          data.mySales
-            .slice(0, 20)
-            .map((s) => (
-              <Row
-                key={s.id}
-                left={`${s.bill_no} · ${formatDMY(s.sale_date)}`}
-                right={money(s.total)}
-                note={saleStateLabel(s) ?? s.payment_mode}
-              />
-            ))
-        )}
-      </Section>
-    </div>
+      </LayoutPart>
+    </LayoutParts>
   );
 }
 

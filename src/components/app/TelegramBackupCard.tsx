@@ -8,6 +8,7 @@ import {
   CloudUpload,
   HardDriveDownload,
   Pencil,
+  PlugZap,
   QrCode,
   Save,
   ScanLine,
@@ -20,6 +21,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
+import { ConnectionTestDialog } from "./ConnectionTestDialog";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -97,7 +99,7 @@ import { RestorePassphrasePrompt } from "./RestorePassphrasePrompt";
 import { reloadIfSettingsRestored } from "@/lib/backup";
 import { TABLE_LABELS } from "@/lib/backup-table-labels";
 import { QrScannerDialog } from "./QrScannerDialog";
-import { LayoutPart } from "./LayoutSection";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 import { OperationProgressBar } from "./OperationProgressBar";
 import { beginOp, redact } from "@/lib/backup-log";
 import {
@@ -185,6 +187,7 @@ export function TelegramBackupCard() {
   const [pendingScan, setPendingScan] =
     useState<Partial<TelegramConfig> | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
   const [messageLocator, setMessageLocator] = useState("");
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [recentLoading, setRecentLoading] = useState(false);
@@ -1027,6 +1030,13 @@ export function TelegramBackupCard() {
               </div>
 
               <SettingsActions>
+                <Button
+                  variant="outline"
+                  disabled={busy !== null}
+                  onClick={() => setTestOpen(true)}
+                >
+                  <PlugZap className="mr-1 h-4 w-4" /> Test connection
+                </Button>
                 <Button disabled={busy !== null} onClick={backupNow}>
                   <CloudUpload className="mr-1 h-4 w-4" /> Backup now
                 </Button>
@@ -1291,108 +1301,121 @@ export function TelegramBackupCard() {
                 ? "Add these records to this device?"
                 : "Replace everything with this backup?"}
             </AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-3 text-sm text-muted-foreground">
-                {pending?.mode === "merge" ? (
-                  <p>
-                    This adds{" "}
-                    <span className="font-medium text-foreground">
-                      {pending.preview.tables.totalAdded} new record
-                      {pending.preview.tables.totalAdded === 1 ? "" : "s"}
-                    </span>{" "}
-                    from {pending.from}. The{" "}
-                    {pending.preview.tables.totalUnchangedOrRemoved} record
-                    {pending.preview.tables.totalUnchangedOrRemoved === 1
-                      ? ""
-                      : "s"}{" "}
-                    already on this device are left exactly as they are —
-                    nothing gets overwritten.
-                  </p>
-                ) : pending ? (
-                  <p>
-                    This deletes{" "}
-                    <span className="font-medium text-foreground">
+          </AlertDialogHeader>
+          <LayoutParts
+            surfaceId="surface.restore-confirm"
+            className="space-y-3"
+          >
+            <LayoutPart id="surface.restore-confirm.summary">
+              <AlertDialogDescription asChild>
+                <div className="text-sm text-muted-foreground">
+                  {pending?.mode === "merge" ? (
+                    <p>
+                      This adds{" "}
+                      <span className="font-medium text-foreground">
+                        {pending.preview.tables.totalAdded} new record
+                        {pending.preview.tables.totalAdded === 1 ? "" : "s"}
+                      </span>{" "}
+                      from {pending.from}. The{" "}
                       {pending.preview.tables.totalUnchangedOrRemoved} record
                       {pending.preview.tables.totalUnchangedOrRemoved === 1
                         ? ""
                         : "s"}{" "}
-                      currently on this device
-                    </span>{" "}
-                    and replaces them with {pending.preview.tables.totalAdded}{" "}
-                    from {pending.from}. It can't be undone — turn on "Merge
-                    with what's already here" first if you'd rather add to it.
-                  </p>
-                ) : null}
-                {pending && pending.preview.filesToAdd > 0 && (
-                  <p>
-                    Includes {pending.preview.filesToAdd} receipt photo
-                    {pending.preview.filesToAdd === 1 ? "" : "s"}
-                    {pending.preview.filesSkippedExisting > 0 ? (
-                      <>
-                        {" "}
-                        ({pending.preview.filesSkippedExisting} already saved
-                        here, left alone)
-                      </>
-                    ) : null}
-                    .
-                  </p>
-                )}
-                {pending && (
-                  <div>
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-xs font-medium text-foreground underline-offset-2 hover:underline"
-                      onClick={() => setShowDetails((v) => !v)}
-                    >
-                      <ChevronDown
-                        className={`h-3.5 w-3.5 transition-transform ${showDetails ? "rotate-180" : ""}`}
-                      />
-                      {showDetails ? "Hide" : "Show"} table-by-table breakdown
-                    </button>
-                    {showDetails && (
-                      <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2 text-xs">
-                        {pending.preview.tables.perTable
-                          .filter((row) =>
-                            row.mode === "merge"
-                              ? row.added > 0 || row.alreadyPresent > 0
-                              : row.willAdd > 0 || row.willRemove > 0,
-                          )
-                          .map((row) => (
-                            <li
-                              key={row.table}
-                              className="flex justify-between gap-2"
-                            >
-                              <span>
-                                {TABLE_LABELS[row.table] ?? row.table}
-                              </span>
-                              <span className="text-right">
-                                {row.mode === "merge"
-                                  ? `+${row.added} new · ${row.alreadyPresent} already have`
-                                  : `+${row.willAdd} · −${row.willRemove}`}
-                              </span>
-                            </li>
-                          ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy !== null}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                void confirmRestore();
-              }}
-              disabled={busy !== null}
-            >
-              {pending?.mode === "merge" ? "Add records" : "Replace everything"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
+                      already on this device are left exactly as they are —
+                      nothing gets overwritten.
+                    </p>
+                  ) : pending ? (
+                    <p>
+                      This deletes{" "}
+                      <span className="font-medium text-foreground">
+                        {pending.preview.tables.totalUnchangedOrRemoved} record
+                        {pending.preview.tables.totalUnchangedOrRemoved === 1
+                          ? ""
+                          : "s"}{" "}
+                        currently on this device
+                      </span>{" "}
+                      and replaces them with {pending.preview.tables.totalAdded}{" "}
+                      from {pending.from}. It can't be undone — turn on "Merge
+                      with what's already here" first if you'd rather add to it.
+                    </p>
+                  ) : null}
+                </div>
+              </AlertDialogDescription>
+            </LayoutPart>
+            {pending && pending.preview.filesToAdd > 0 && (
+              <LayoutPart id="surface.restore-confirm.photos">
+                <p className="text-sm text-muted-foreground">
+                  Includes {pending.preview.filesToAdd} receipt photo
+                  {pending.preview.filesToAdd === 1 ? "" : "s"}
+                  {pending.preview.filesSkippedExisting > 0 ? (
+                    <>
+                      {" "}
+                      ({pending.preview.filesSkippedExisting} already saved
+                      here, left alone)
+                    </>
+                  ) : null}
+                  .
+                </p>
+              </LayoutPart>
+            )}
+            {pending && (
+              <LayoutPart id="surface.restore-confirm.breakdown">
+                <div className="text-sm text-muted-foreground">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                    onClick={() => setShowDetails((v) => !v)}
+                  >
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 transition-transform ${showDetails ? "rotate-180" : ""}`}
+                    />
+                    {showDetails ? "Hide" : "Show"} table-by-table breakdown
+                  </button>
+                  {showDetails && (
+                    <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2 text-xs">
+                      {pending.preview.tables.perTable
+                        .filter((row) =>
+                          row.mode === "merge"
+                            ? row.added > 0 || row.alreadyPresent > 0
+                            : row.willAdd > 0 || row.willRemove > 0,
+                        )
+                        .map((row) => (
+                          <li
+                            key={row.table}
+                            className="flex justify-between gap-2"
+                          >
+                            <span>{TABLE_LABELS[row.table] ?? row.table}</span>
+                            <span className="text-right">
+                              {row.mode === "merge"
+                                ? `+${row.added} new · ${row.alreadyPresent} already have`
+                                : `+${row.willAdd} · −${row.willRemove}`}
+                            </span>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+              </LayoutPart>
+            )}
+            <LayoutPart id="surface.restore-confirm.actions">
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={busy !== null}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void confirmRestore();
+                  }}
+                  disabled={busy !== null}
+                >
+                  {pending?.mode === "merge"
+                    ? "Add records"
+                    : "Replace everything"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </LayoutPart>
+          </LayoutParts>
         </AlertDialogContent>
       </AlertDialog>
 
@@ -1401,20 +1424,33 @@ export function TelegramBackupCard() {
           <DialogHeader>
             <DialogTitle>Scan this on the other device</DialogTitle>
           </DialogHeader>
-          {qrDataUrl && (
-            <img
-              src={qrDataUrl}
-              alt="Telegram backup setup code"
-              className="mx-auto max-w-full h-auto w-56 rounded-lg"
-            />
-          )}
-          <DialogDescription className="text-xs">
-            Open Settings → Telegram backup there and tap "Scan setup QR". Only
-            show this to devices you own — it carries the bot token.
-          </DialogDescription>
+          <LayoutParts surfaceId="surface.telegram-qr" className="space-y-3">
+            <LayoutPart id="surface.telegram-qr.code">
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt="Telegram backup setup code"
+                  className="mx-auto max-w-full h-auto w-56 rounded-lg"
+                />
+              ) : (
+                <span />
+              )}
+            </LayoutPart>
+            <LayoutPart id="surface.telegram-qr.instructions">
+              <DialogDescription className="text-xs">
+                Open Settings → Telegram backup there and tap "Scan setup QR".
+                Only show this to devices you own — it carries the bot token.
+              </DialogDescription>
+            </LayoutPart>
+          </LayoutParts>
         </DialogContent>
       </Dialog>
 
+      <ConnectionTestDialog
+        open={testOpen}
+        onOpenChange={setTestOpen}
+        cfg={cfg}
+      />
       <QrScannerDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
@@ -1431,25 +1467,31 @@ export function TelegramBackupCard() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Use scanned Telegram details?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Only the fields present in the scan will be filled. Review them
-              before saving. Token:{" "}
-              {pendingScan?.botToken
-                ? `${pendingScan.botToken.slice(0, 6)}…:${pendingScan.botToken.slice(-3)}`
-                : "unchanged"}
-              . Chat ID:{" "}
-              {pendingScan?.chatId
-                ? `…${pendingScan.chatId.slice(-4)}`
-                : "unchanged"}
-              .
-            </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmScan}>
-              Use details
-            </AlertDialogAction>
-          </AlertDialogFooter>
+          <LayoutParts surfaceId="surface.scan-confirm" className="space-y-3">
+            <LayoutPart id="surface.scan-confirm.details">
+              <AlertDialogDescription>
+                Only the fields present in the scan will be filled. Review them
+                before saving. Token:{" "}
+                {pendingScan?.botToken
+                  ? `${pendingScan.botToken.slice(0, 6)}…:${pendingScan.botToken.slice(-3)}`
+                  : "unchanged"}
+                . Chat ID:{" "}
+                {pendingScan?.chatId
+                  ? `…${pendingScan.chatId.slice(-4)}`
+                  : "unchanged"}
+                .
+              </AlertDialogDescription>
+            </LayoutPart>
+            <LayoutPart id="surface.scan-confirm.actions">
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={confirmScan}>
+                  Use details
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </LayoutPart>
+          </LayoutParts>
         </AlertDialogContent>
       </AlertDialog>
       <RestorePassphrasePrompt

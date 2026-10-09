@@ -8,6 +8,10 @@
     "core:default",
 
     "dialog:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://api.telegram.org/**" }]
+    },
 
     "fs:default",
     "fs:allow-exists",

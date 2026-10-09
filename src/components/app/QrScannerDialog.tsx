@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 
 // Scan failures are logged by stable code only: never the scanned text.
 const logScanFailure = (summary: string, errorCode: string) => {
@@ -36,6 +37,14 @@ type Props = {
   hint?: string;
 };
 
+/**
+ * Camera / image / paste QR scanner pop-up.
+ *
+ * Registered in Layout & arrangement as `surface.qr-scanner`
+ * (see SURFACE_REGISTRY in `src/lib/layout-parts.ts`). All three parts are
+ * locked: they can be moved but not hidden, because hiding any of them would
+ * remove a way to enter the details.
+ */
 export function QrScannerDialog({
   open,
   onOpenChange,
@@ -279,109 +288,121 @@ export function QrScannerDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{hint}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          {error ? (
-            <div className="rounded-xl border p-3 text-sm text-muted-foreground">
-              {error}
-            </div>
-          ) : (
-            <div className="relative overflow-hidden rounded-xl bg-black">
-              <video
-                ref={videoRef}
-                playsInline
-                muted
-                className="aspect-square w-full object-cover"
-              />
-              <div className="pointer-events-none absolute inset-[18%] rounded-2xl border-2 border-white/80" />
-              {startingCamera && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-medium text-white">
-                  Camera starting…
-                </div>
-              )}
-            </div>
-          )}
+        <LayoutParts surfaceId="surface.qr-scanner" className="space-y-3">
+          <LayoutPart id="surface.qr-scanner.camera">
+            {error ? (
+              <div className="rounded-xl border p-3 text-sm text-muted-foreground">
+                {error}
+              </div>
+            ) : (
+              <div className="relative overflow-hidden rounded-xl bg-black">
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  className="aspect-square w-full object-cover"
+                />
+                <div className="pointer-events-none absolute inset-[18%] rounded-2xl border-2 border-white/80" />
+                {startingCamera && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-medium text-white">
+                    Camera starting…
+                  </div>
+                )}
+              </div>
+            )}
+          </LayoutPart>
           {manual && (
-            <div className="space-y-2 rounded-xl border p-3">
-              <label className="text-sm font-medium" htmlFor="qr-manual-value">
-                Telegram details
-              </label>
-              <Input
-                id="qr-manual-value"
-                value={manualText}
-                onChange={(e) => setManualText(e.target.value)}
-                placeholder="Paste a bot token, chat ID, or pairing text"
-                autoCapitalize="none"
-                autoCorrect="off"
-              />
-              <Button
-                disabled={!manualText.trim()}
-                onClick={() => {
-                  onResultRef.current(manualText.trim());
-                  setManual(false);
-                  setManualText("");
-                  onOpenChangeRef.current(false);
-                }}
-              >
-                Use entered details
-              </Button>
-            </div>
+            <LayoutPart id="surface.qr-scanner.manual">
+              <div className="space-y-2 rounded-xl border p-3">
+                <label
+                  className="text-sm font-medium"
+                  htmlFor="qr-manual-value"
+                >
+                  Telegram details
+                </label>
+                <Input
+                  id="qr-manual-value"
+                  value={manualText}
+                  onChange={(e) => setManualText(e.target.value)}
+                  placeholder="Paste a bot token, chat ID, or pairing text"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                />
+                <Button
+                  disabled={!manualText.trim()}
+                  onClick={() => {
+                    onResultRef.current(manualText.trim());
+                    setManual(false);
+                    setManualText("");
+                    onOpenChangeRef.current(false);
+                  }}
+                >
+                  Use entered details
+                </Button>
+              </div>
+            </LayoutPart>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => fileRef.current?.click()}>
-              <ImageIcon className="mr-1 h-4 w-4" />
-              Choose image
-            </Button>
-            <Button variant="outline" onClick={paste}>
-              <Clipboard className="mr-1 h-4 w-4" />
-              Paste
-            </Button>
-            {devices.length > 1 && (
-              <Button variant="outline" onClick={chooseDevice}>
-                <RefreshCw className="mr-1 h-4 w-4" />
-                Switch camera
-              </Button>
-            )}
-            {torchAvailable && (
+          <LayoutPart id="surface.qr-scanner.tools">
+            <div className="flex flex-wrap gap-2">
               <Button
-                variant={torch ? "default" : "outline"}
-                onClick={() => setTorch((v) => !v)}
+                variant="outline"
+                onClick={() => fileRef.current?.click()}
               >
-                <Zap className="mr-1 h-4 w-4" />
-                Torch
+                <ImageIcon className="mr-1 h-4 w-4" />
+                Choose image
               </Button>
-            )}
-            {error && (
+              <Button variant="outline" onClick={paste}>
+                <Clipboard className="mr-1 h-4 w-4" />
+                Paste
+              </Button>
+              {devices.length > 1 && (
+                <Button variant="outline" onClick={chooseDevice}>
+                  <RefreshCw className="mr-1 h-4 w-4" />
+                  Switch camera
+                </Button>
+              )}
+              {torchAvailable && (
+                <Button
+                  variant={torch ? "default" : "outline"}
+                  onClick={() => setTorch((v) => !v)}
+                >
+                  <Zap className="mr-1 h-4 w-4" />
+                  Torch
+                </Button>
+              )}
+              {error && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    stop();
+                    setDeviceId("");
+                    setError(null);
+                    setAttempt((n) => n + 1);
+                  }}
+                >
+                  Retry camera
+                </Button>
+              )}
               <Button
                 variant="outline"
                 onClick={() => {
                   stop();
-                  setDeviceId("");
-                  setError(null);
-                  setAttempt((n) => n + 1);
+                  setManual(true);
                 }}
               >
-                Retry camera
+                <Camera className="mr-1 h-4 w-4" />
+                Enter manually
               </Button>
-            )}
-            <Button
-              variant="outline"
-              onClick={() => {
-                stop();
-                setManual(true);
-              }}
-            >
-              <Camera className="mr-1 h-4 w-4" />
-              Enter manually
-            </Button>
-          </div>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={scanImage}
-          />
-        </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={scanImage}
+              />
+            </div>
+          </LayoutPart>
+        </LayoutParts>
       </DialogContent>
     </Dialog>
   );

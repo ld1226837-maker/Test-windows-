@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { LayoutPart, LayoutParts } from "./LayoutSection";
 import {
   Dialog,
   DialogContent,
@@ -105,40 +106,49 @@ export function MergeCustomersDialog({ customers }: Props) {
       <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Merge duplicate customers</DialogTitle>
-          <DialogDescription>
-            Pick the record to keep, tick the duplicates to fold into it, then
-            confirm the final name/phone. Their bills, bookings and snack orders
-            move over automatically.
-          </DialogDescription>
         </DialogHeader>
 
-        {customers.length < 2 ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            You need at least two saved customers to merge.
-          </p>
-        ) : (
-          <div className="space-y-4">
-            <div className="space-y-1">
-              <Label className="text-xs">1. Keep this customer</Label>
-              <RadioGroup value={keepId ?? ""} onValueChange={selectKeep}>
-                <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2">
-                  {customers.map((c) => (
-                    <label
-                      key={c.id}
-                      className="flex items-center gap-2 rounded-md p-1.5 text-sm hover:bg-muted"
-                    >
-                      <RadioGroupItem value={c.id} />
-                      <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {c.phone || "—"}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </RadioGroup>
-            </div>
+        <LayoutParts surfaceId="surface.merge-customers" className="space-y-4">
+          <LayoutPart id="surface.merge-customers.explainer">
+            <DialogDescription>
+              Pick the record to keep, tick the duplicates to fold into it, then
+              confirm the final name/phone. Their bills, bookings and snack
+              orders move over automatically.
+            </DialogDescription>
+          </LayoutPart>
 
-            {keepId && (
+          <LayoutPart id="surface.merge-customers.keep">
+            {customers.length < 2 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                You need at least two saved customers to merge.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                <Label className="text-xs">1. Keep this customer</Label>
+                <RadioGroup value={keepId ?? ""} onValueChange={selectKeep}>
+                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2">
+                    {customers.map((c) => (
+                      <label
+                        key={c.id}
+                        className="flex items-center gap-2 rounded-md p-1.5 text-sm hover:bg-muted"
+                      >
+                        <RadioGroupItem value={c.id} />
+                        <span className="min-w-0 flex-1 truncate">
+                          {c.name}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {c.phone || "—"}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </RadioGroup>
+              </div>
+            )}
+          </LayoutPart>
+
+          {customers.length >= 2 && keepId && (
+            <LayoutPart id="surface.merge-customers.merge">
               <div className="space-y-1">
                 <Label className="text-xs">2. Fold these into it</Label>
                 <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2">
@@ -163,9 +173,11 @@ export function MergeCustomersDialog({ customers }: Props) {
                     ))}
                 </div>
               </div>
-            )}
+            </LayoutPart>
+          )}
 
-            {keepId && absorb.length > 0 && (
+          {customers.length >= 2 && keepId && absorb.length > 0 && (
+            <LayoutPart id="surface.merge-customers.final">
               <div className="grid grid-cols-2 gap-2 rounded-lg border border-dashed p-3">
                 <div className="col-span-2">
                   <Label className="text-xs">3. Final name</Label>
@@ -186,18 +198,20 @@ export function MergeCustomersDialog({ customers }: Props) {
                   />
                 </div>
               </div>
-            )}
-          </div>
-        )}
+            </LayoutPart>
+          )}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button disabled={!canMerge || merge.isPending} onClick={doMerge}>
-            <Merge className="mr-1 h-4 w-4" /> Merge
-          </Button>
-        </DialogFooter>
+          <LayoutPart id="surface.merge-customers.actions">
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button disabled={!canMerge || merge.isPending} onClick={doMerge}>
+                <Merge className="mr-1 h-4 w-4" /> Merge
+              </Button>
+            </DialogFooter>
+          </LayoutPart>
+        </LayoutParts>
       </DialogContent>
     </Dialog>
   );

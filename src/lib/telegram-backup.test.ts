@@ -44,6 +44,8 @@ import {
   lastUploadForChat,
   uploadFullBackup,
   downloadChunk,
+  testTelegramConnection,
+  DEFAULT_TELEGRAM_CONFIG,
   writeTelegramConfig,
   type TelegramConfig,
 } from "./telegram-backup";
@@ -1319,6 +1321,119 @@ describe("downloadChunk()", () => {
     await expect(downloadChunk("bot-1", "fid")).rejects.toThrow(
       /download path/i,
     );
+  });
+});
+
+describe("downloadChunk() network failures", () => {
+  const fileOk = () =>
+    new Response(
+      JSON.stringify({ ok: true, result: { file_path: "documents/a.zip" } }),
+      { status: 200 },
+    );
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("names the step and cause, and never leaks the bot token", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("getFile")) return fileOk();
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    const result = downloadChunk("secret-token-123", "fid").then(
+      () => null,
+      (e: Error) => e,
+    );
+    await vi.advanceTimersByTimeAsync(120_000);
+    const err = await result;
+    expect(err?.message).toMatch(/file download/);
+    expect(err?.message).toMatch(/network - TypeError: Failed to fetch/);
+    expect(err?.message).not.toContain("secret-token-123");
+  });
+
+  it("does not retry when the caller aborts", async () => {
+    const ctl = new AbortController();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("getFile")) return fileOk();
+      ctl.abort();
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      downloadChunk("bot-1", "fid", { signal: ctl.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    // getFile once + the single aborted download attempt
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("testTelegramConnection()", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status });
+  const cfg = { ...DEFAULT_TELEGRAM_CONFIG, botToken: "tok-1", chatId: "-100" };
+
+  it("passes when every step works and cleans up the test message", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url.split("/").pop() ?? "");
+        if (url.includes("getMe"))
+          return json({ ok: true, result: { id: 7, username: "b" } });
+        if (url.includes("getChat?") || url.endsWith("/getChat"))
+          return json({ ok: true, result: { type: "channel" } });
+        if (url.includes("getChatMember"))
+          return json({
+            ok: true,
+            result: { status: "administrator", can_post_messages: true },
+          });
+        if (url.includes("sendDocument"))
+          return json({
+            ok: true,
+            result: { message_id: 9, document: { file_id: "f" } },
+          });
+        if (url.includes("getFile"))
+          return json({ ok: true, result: { file_path: "d/t.txt" } });
+        if (url.includes("/file/bot")) return new Response("connection test");
+        if (url.includes("deleteMessage"))
+          return json({ ok: true, result: true });
+        return json({ ok: false }, 404);
+      }),
+    );
+    const r = await testTelegramConnection(cfg);
+    expect(r.ok).toBe(true);
+    expect(calls).toContain("deleteMessage");
+  });
+
+  it("names the step when the bot is not an admin", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("getMe")) return json({ ok: true, result: { id: 7 } });
+        if (url.endsWith("/getChat"))
+          return json({ ok: true, result: { type: "supergroup" } });
+        return json({ ok: true, result: { status: "member" } });
+      }),
+    );
+    const r = await testTelegramConnection(cfg);
+    expect(r.ok).toBe(false);
+    expect(r.failedStep).toBe("Bot is admin");
+    expect(r.message).not.toContain("tok-1");
+  });
+
+  it("stops at the token step on a 401", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ ok: false, description: "Unauthorized" }, 401)),
+    );
+    const r = await testTelegramConnection(cfg);
+    expect(r.failedStep).toBe("Bot token and network");
+    expect(r.steps).toHaveLength(1);
   });
 });
 

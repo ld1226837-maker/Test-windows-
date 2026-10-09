@@ -43,6 +43,7 @@ import {
 } from "./backup-crypto";
 import { beginOp, errorCodeFor, redact } from "./backup-log";
 import type { OpPhase } from "./operation-progress";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 /**
  * Telegram full backup — ONE archive, ONE destination, ONE restore action.
@@ -1518,6 +1519,164 @@ export async function validateTelegramConfig(
   }
 }
 
+export type ConnectionStep = { name: string; ok: boolean; detail?: string };
+export type ConnectionTestResult = {
+  ok: boolean;
+  steps: ConnectionStep[];
+  /** Set when a step failed: the step's name and a sentence a person can act on. */
+  failedStep?: string;
+  message: string;
+};
+
+/**
+ * Walks the exact path a backup and restore use, stopping at the first
+ * failure and naming it: token, chat, bot permissions, upload, download
+ * (the step that fails on a WebView CORS block), cleanup.
+ * Sends one tiny document and deletes it again.
+ */
+export async function testTelegramConnection(
+  cfg: TelegramConfig,
+  onStep?: (step: ConnectionStep) => void,
+): Promise<ConnectionTestResult> {
+  const steps: ConnectionStep[] = [];
+  const token = cfg.botToken?.trim() ?? "";
+  const chatId = cfg.chatId?.trim() ?? "";
+  const fail = (name: string, e: unknown): ConnectionTestResult => {
+    const detail = redact(e instanceof Error ? e.message : String(e));
+    const step = { name, ok: false, detail };
+    steps.push(step);
+    onStep?.(step);
+    return {
+      ok: false,
+      steps,
+      failedStep: name,
+      message: `Test failed at "${name}": ${detail}`,
+    };
+  };
+  const pass = (name: string, detail?: string) => {
+    const step: ConnectionStep = detail
+      ? { name, ok: true, detail }
+      : { name, ok: true };
+    steps.push(step);
+    onStep?.(step);
+  };
+  const quick = { maxAttempts: 2 } as const;
+  if (!token)
+    return fail("Bot token", new Error("Enter the Telegram bot token."));
+  if (!chatId) return fail("Chat ID", new Error("Enter the Telegram chat ID."));
+
+  let botId: number | undefined;
+  try {
+    const me = await callApi<{ id?: number; username?: string }>(
+      token,
+      "getMe",
+      {},
+      quick,
+    );
+    botId = me?.id;
+    pass("Bot token and network", me?.username ? `@${me.username}` : undefined);
+  } catch (e) {
+    return fail("Bot token and network", e);
+  }
+
+  let chatType = "";
+  try {
+    const chat = await callApi<{ type?: string }>(
+      token,
+      "getChat",
+      { chat_id: chatId },
+      quick,
+    );
+    chatType = chat?.type ?? "";
+    pass("Chat ID", chatType || undefined);
+  } catch (e) {
+    return fail("Chat ID", e);
+  }
+
+  if (chatType !== "private" && botId !== undefined) {
+    try {
+      const m = await callApi<{
+        status?: string;
+        can_post_messages?: boolean;
+        can_pin_messages?: boolean;
+        can_delete_messages?: boolean;
+      }>(token, "getChatMember", { chat_id: chatId, user_id: botId }, quick);
+      if (m?.status !== "administrator" && m?.status !== "creator")
+        throw new Error(
+          "The bot is in the chat but is not an admin. Make it an admin that can post, pin and delete messages.",
+        );
+      const missing = [
+        m.can_post_messages === false ? "post messages" : "",
+        m.can_pin_messages === false ? "pin messages" : "",
+        m.can_delete_messages === false ? "delete messages" : "",
+      ].filter(Boolean);
+      if (missing.length)
+        throw new Error(`The bot is an admin but can't ${missing.join(", ")}.`);
+      pass("Bot is admin");
+    } catch (e) {
+      return fail("Bot is admin", e);
+    }
+  }
+
+  let messageId: number | undefined;
+  let fileId: string | undefined;
+  try {
+    const form = new FormData();
+    form.append("chat_id", chatId);
+    form.append(
+      "document",
+      new Blob(["connection test"], { type: "text/plain" }),
+      "connection-test.txt",
+    );
+    const res = await telegramFetch(
+      `${API_ROOT}/bot${token}/sendDocument`,
+      { method: "POST", body: form },
+      { retryNetwork: false },
+    );
+    const body = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      result?: { message_id?: number; document?: { file_id?: string } };
+    } | null;
+    if (!res.ok || !body?.ok)
+      throw new Error(telegramErrorMessage(res.status, body));
+    messageId = body.result?.message_id;
+    fileId = body.result?.document?.file_id;
+    pass("Upload");
+  } catch (e) {
+    return fail("Upload", e);
+  }
+
+  let result: ConnectionTestResult | null = null;
+  try {
+    const bytes = await downloadChunk(token, fileId ?? "", {});
+    if (new TextDecoder().decode(bytes) !== "connection test")
+      throw new Error("The downloaded test file didn't match what was sent.");
+    pass("Download");
+  } catch (e) {
+    result = fail("Download", e);
+  }
+
+  try {
+    if (messageId !== undefined)
+      await callApi(
+        token,
+        "deleteMessage",
+        { chat_id: chatId, message_id: messageId },
+        quick,
+      );
+    if (!result) pass("Cleanup");
+  } catch (e) {
+    if (!result) result = fail("Cleanup", e);
+  }
+  return (
+    result ?? {
+      ok: true,
+      steps,
+      message: "All checks passed: backup and restore should work.",
+    }
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * QR pairing
  * ------------------------------------------------------------------ */
@@ -1781,6 +1940,77 @@ const sleep = (ms: number, signal?: AbortSignal | undefined) =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
+/**
+ * Telegram's file-download endpoint (`/file/bot<token>/...`) answers without
+ * an `Access-Control-Allow-Origin` header, so the Android/Windows WebView
+ * refuses to hand the bytes to JavaScript and `fetch` throws a bare network
+ * error. Inside Tauri those downloads go through the native HTTP plugin
+ * (no CORS). Uploads and JSON calls already work in the WebView and stay on
+ * the browser `fetch`.
+ */
+const inTauri = () =>
+  typeof window !== "undefined" &&
+  typeof (window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } })
+    .__TAURI_INTERNALS__?.invoke === "function";
+function fetchFor(url: string): typeof fetch {
+  return inTauri() && url.includes("/file/bot")
+    ? (tauriFetch as unknown as typeof fetch)
+    : fetch;
+}
+
+type NetKind = "offline" | "timeout" | "network";
+type NetFailure = { kind: NetKind; name: string; message: string };
+
+/** The API method / step name only. The full URL contains the bot token. */
+function safeStep(url: string): string {
+  if (url.includes("/file/bot")) return "file download";
+  return url.split("/bot")[1]?.split("/")[1]?.split("?")[0] ?? "request";
+}
+
+function classifyNetworkError(e: unknown, timedOut: boolean): NetFailure {
+  const err = e as { name?: string; message?: string } | null;
+  const online = typeof navigator === "undefined" ? true : navigator.onLine;
+  const kind: NetKind = timedOut ? "timeout" : online ? "network" : "offline";
+  return {
+    kind,
+    name: err?.name ?? "Error",
+    message: err?.message ?? "fetch failed",
+  };
+}
+
+const withJitter = (ms: number) => Math.round(ms * (0.8 + Math.random() * 0.4));
+
+/** Resolves on the `online` event, after `maxMs`, or rejects on abort. */
+function waitForOnline(
+  signal: AbortSignal | undefined,
+  maxMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (typeof window !== "undefined")
+        window.removeEventListener("online", done);
+      signal?.removeEventListener("abort", cancel);
+    };
+    const done = () => {
+      cleanup();
+      resolve();
+    };
+    const cancel = () => {
+      cleanup();
+      reject(abortError());
+    };
+    const timer = setTimeout(done, maxMs);
+    if (typeof window !== "undefined")
+      window.addEventListener("online", done, { once: true });
+    signal?.addEventListener("abort", cancel, { once: true });
+  });
+}
+
 async function telegramFetch(
   url: string,
   init?: RequestInit,
@@ -1789,6 +2019,9 @@ async function telegramFetch(
     signal?: AbortSignal | undefined;
     /** Caps network-level attempts (default MAX_CHUNK_ATTEMPTS). */
     maxAttempts?: number | undefined;
+    /** Per-attempt wait for the response headers (default 60 s; 300 s for
+     *  non-retried uploads, whose headers only arrive after the body is sent). */
+    timeoutMs?: number | undefined;
   } = {},
 ): Promise<Response> {
   const retryNetwork = options.retryNetwork !== false;
@@ -1796,23 +2029,39 @@ async function telegramFetch(
   const attempts = retryNetwork
     ? Math.max(1, options.maxAttempts ?? MAX_CHUNK_ATTEMPTS)
     : 1;
-  let lastError: unknown = null;
+  const perAttemptMs = options.timeoutMs ?? (retryNetwork ? 60_000 : 300_000);
+  const doFetch = fetchFor(url);
+  let last: NetFailure | null = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     // A cancel or deadline is the answer: never retry it, never swallow it.
     if (signal?.aborted) throw abortError();
+    const ctl = new AbortController();
+    let timedOut = false;
+    const onCancel = () => ctl.abort();
+    signal?.addEventListener("abort", onCancel, { once: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ctl.abort();
+    }, perAttemptMs);
     try {
-      return await fetch(url, signal ? { ...init, signal } : init);
+      return await doFetch(url, { ...init, signal: ctl.signal });
     } catch (e) {
-      if (signal?.aborted || (e as Error)?.name === "AbortError")
-        throw abortError();
-      lastError = e;
+      if (signal?.aborted) throw abortError();
+      last = classifyNetworkError(
+        e,
+        timedOut || (e as Error)?.name === "AbortError",
+      );
       if (!retryNetwork) throw e;
-      if (attempt < attempts) await sleep(retryAfterMs(null, attempt), signal);
+      if (last.kind === "offline") await waitForOnline(signal, 30_000);
+      else if (attempt < attempts)
+        await sleep(withJitter(retryAfterMs(null, attempt)), signal);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onCancel);
     }
   }
-  void lastError;
   throw new Error(
-    `Couldn't reach Telegram after ${attempts} attempts — check the internet connection and try again.`,
+    `Couldn't reach Telegram (${safeStep(url)}, ${attempts} attempts): ${last?.kind} - ${last?.name}: ${last?.message}. Check the internet connection, then try again.`,
   );
 }
 
@@ -3335,6 +3584,10 @@ export type ShardedTelegramUploadResult = {
 /** Uploads the actual R3 shards to Telegram. Each shard is independently
  * encrypted before transport, so restore can download/decrypt/verify one
  * shard at a time instead of rebuilding one multi-GB archive in memory. */
+/** Set by the sharded upload when the manifest could not be pinned, so the
+ * backup log can record a warning instead of a silent success. */
+let lastPinWarning: string | null = null;
+
 async function uploadShardedFullBackupImpl(
   cfg: TelegramConfig,
   deviceLabel = cfg.deviceLabel ?? defaultDeviceLabel(),
@@ -3348,6 +3601,7 @@ async function uploadShardedFullBackupImpl(
   }) => void,
   signal?: AbortSignal,
 ): Promise<ShardedTelegramUploadResult> {
+  lastPinWarning = null;
   if (!isTelegramConfigured(cfg))
     throw new Error(
       "Add the bot token and chat ID before backing up to Telegram.",
@@ -3461,6 +3715,7 @@ async function uploadShardedFullBackupImpl(
           "Telegram manifest pin failed; exact message ID remains available.",
           e,
         );
+        lastPinWarning = redact(e instanceof Error ? e.message : String(e));
       }
     }
     if (typeof manifestMessageId !== "number") {
@@ -3632,10 +3887,18 @@ export async function uploadShardedFullBackup(
     const result = await withMigrationLock(() =>
       uploadShardedFullBackupImpl(cfg, deviceLabel, onProgress, options.signal),
     );
-    op?.finish("success", "Telegram backup completed", {
-      parts: { done: result.shardCount, total: result.shardCount },
-      encrypted: true,
-    });
+    const pinNote = lastPinWarning;
+    op?.finish(
+      pinNote ? "warning" : "success",
+      pinNote
+        ? "Backup uploaded but could not be pinned; a new device will need the message ID"
+        : "Telegram backup completed",
+      {
+        parts: { done: result.shardCount, total: result.shardCount },
+        encrypted: true,
+        ...(pinNote ? { errorMessage: pinNote } : {}),
+      },
+    );
     return result;
   } catch (e) {
     op?.finish("error", "Telegram backup failed", {
@@ -3889,25 +4152,15 @@ export async function fetchShardedFullBackupByMessage(
         return {
           session: parsedManifest.session,
           top,
-          shards: {
-            fetch: async (index) => {
-              if (options.signal?.aborted)
-                throw new DOMException(
-                  "The Telegram restore was cancelled before data was written.",
-                  "AbortError",
-                );
-              const shard = ordered[index];
-              if (!shard) return null;
-              return decryptWith(
-                options.passphrase,
-                await downloadChunk(shard.botToken ?? token, shard.fileId, {
-                  signal: options.signal,
-                  onRetry: (retry: RetryInfo) =>
-                    options.onProgress?.({ phase: "downloading", retry }),
-                }),
-              );
-            },
-          },
+          shards: telegramShardSource({
+            ordered,
+            token: token,
+            session: parsedManifest.session,
+            top,
+            passphrase: options.passphrase,
+            signal: options.signal,
+            onProgress: options.onProgress,
+          }),
         };
       }
 
@@ -3973,25 +4226,15 @@ export async function fetchShardedFullBackupByMessage(
       return {
         session: set.session,
         top,
-        shards: {
-          fetch: async (index) => {
-            if (options.signal?.aborted)
-              throw new DOMException(
-                "The Telegram restore was cancelled before data was written.",
-                "AbortError",
-              );
-            const shard = ordered[index];
-            if (!shard) return null;
-            return decryptWith(
-              options.passphrase,
-              await downloadChunk(shard.botToken ?? token, shard.fileId, {
-                signal: options.signal,
-                onRetry: (retry: RetryInfo) =>
-                  options.onProgress?.({ phase: "downloading", retry }),
-              }),
-            );
-          },
-        },
+        shards: telegramShardSource({
+          ordered,
+          token: token,
+          session: parsedManifest.session,
+          top,
+          passphrase: options.passphrase,
+          signal: options.signal,
+          onProgress: options.onProgress,
+        }),
       };
     } catch (error) {
       // A missing/wrong passphrase or a cancel is the real answer: never let
@@ -4084,33 +4327,15 @@ async function fetchLatestShardedFullBackupImpl(
             return {
               session: parsed.session,
               top,
-              shards: {
-                fetch: async (index) => {
-                  if (options.signal?.aborted)
-                    throw new DOMException(
-                      "The Telegram restore was cancelled before data was written.",
-                      "AbortError",
-                    );
-                  const shard = ordered[index];
-                  return shard
-                    ? decryptWith(
-                        options.passphrase,
-                        await downloadChunk(
-                          shard.botToken ?? token,
-                          shard.fileId,
-                          {
-                            signal: options.signal,
-                            onRetry: (retry) =>
-                              options.onProgress?.({
-                                phase: "downloading",
-                                retry,
-                              }),
-                          },
-                        ),
-                      )
-                    : null;
-                },
-              },
+              shards: telegramShardSource({
+                ordered,
+                token: token,
+                session: parsed.session,
+                top,
+                passphrase: options.passphrase,
+                signal: options.signal,
+                onProgress: options.onProgress,
+              }),
             };
           }
         }
@@ -4214,28 +4439,162 @@ async function fetchLatestShardedFullBackupImpl(
       parseShardedShardName(a.fileName)!.index -
       parseShardedShardName(b.fileName)!.index,
   );
-  const shards: ShardSource = {
+  const shards: ShardSource = telegramShardSource({
+    ordered,
+    token: cfg.botToken,
+    session: set.session,
+    top,
+    passphrase: options.passphrase,
+    signal: options.signal,
+    onProgress: options.onProgress,
+  });
+  return { session: set.session, top, shards };
+}
+
+/* ------------------------------------------------------------------ *
+ * Resumable restore: verified shards are kept (still encrypted) in the
+ * app's private storage so a dropped connection resumes where it stopped.
+ * ------------------------------------------------------------------ */
+
+const RESTORE_CACHE_DIR = "tg-restore";
+const safeSegment = (v: string) => v.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/**
+ * A cache file is `<64 hex chars: sha256 of the payload><payload>`. The
+ * payload is the shard exactly as Telegram sent it (encrypted). It is only
+ * written after the shard decrypted AND matched the manifest checksum.
+ */
+async function readCachedShard(path: string): Promise<Uint8Array | null> {
+  try {
+    const { appDocumentExists, readAppDocument } = await import("./desktop");
+    if (!(await appDocumentExists(path))) return null;
+    const file = await readAppDocument(path);
+    if (file.length <= 64) return null;
+    const header = new TextDecoder().decode(file.subarray(0, 64));
+    const payload = file.subarray(64);
+    return (await sha256Hex(payload)).toLowerCase() === header.toLowerCase()
+      ? payload
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedShard(
+  path: string,
+  payload: Uint8Array,
+): Promise<void> {
+  try {
+    const { saveToAppDocuments } = await import("./desktop");
+    const header = new TextEncoder().encode(await sha256Hex(payload));
+    const file = new Uint8Array(header.length + payload.length);
+    file.set(header, 0);
+    file.set(payload, header.length);
+    await saveToAppDocuments(path, file);
+  } catch {
+    /* caching is best-effort: a full disk must never fail a restore */
+  }
+}
+
+/** Removes every cached restore shard. Safe to call at any time. */
+export async function clearTelegramRestoreCache(): Promise<void> {
+  try {
+    const { getAppDocsBaseForInternalUse } = await import("./desktop");
+    const { remove } = await import("@tauri-apps/plugin-fs");
+    const { baseDir } = await getAppDocsBaseForInternalUse();
+    await remove(`TurfApp/${RESTORE_CACHE_DIR}`, { baseDir, recursive: true });
+  } catch {
+    /* nothing cached, or not running inside Tauri */
+  }
+}
+
+let cacheSessionCleared: string | null = null;
+
+/**
+ * Builds the shard source for a Telegram restore: one place for download,
+ * decrypt, checksum, disk cache and a one-shard lookahead (shard n+1 downloads
+ * while shard n is being restored).
+ */
+export function telegramShardSource(args: {
+  ordered: RemoteChunk[];
+  token: string;
+  session: string;
+  top: FullBackupTopManifest;
+  passphrase: string | undefined;
+  signal: AbortSignal | undefined;
+  onProgress: ((p: TelegramRestoreProgress) => void) | undefined;
+}): ShardSource {
+  const { ordered, token, session, top, passphrase, signal, onProgress } = args;
+  const inflight = new Map<number, Promise<Uint8Array>>();
+  const cancelled = () =>
+    new DOMException(
+      "The Telegram restore was cancelled before data was written.",
+      "AbortError",
+    );
+
+  const load = async (index: number): Promise<Uint8Array> => {
+    const shard = ordered[index]!;
+    const expected = top.shards?.[index]?.sha256?.toLowerCase();
+    const idHash = (
+      await sha256Hex(new TextEncoder().encode(shard.fileId))
+    ).slice(0, 16);
+    const path = `${RESTORE_CACHE_DIR}/${safeSegment(session)}/${index + 1}-${idHash}.bin`;
+    if (cacheSessionCleared !== session) {
+      // A different backup than the last one cached: drop the old files.
+      await clearTelegramRestoreCache();
+      cacheSessionCleared = session;
+    }
+    const cached = await readCachedShard(path);
+    if (cached) {
+      try {
+        const plain = await decryptWith(passphrase, cached);
+        if (!expected || (await sha256Hex(plain)).toLowerCase() === expected)
+          return plain;
+      } catch (e) {
+        if (isPassphraseOrAbort(e)) throw e;
+      }
+      // A bad cache entry is never trusted: fall through and re-download.
+    }
+    const encrypted = await downloadChunk(
+      shard.botToken ?? token,
+      shard.fileId,
+      {
+        signal,
+        onRetry: (retry: RetryInfo) =>
+          onProgress?.({ phase: "downloading", retry }),
+      },
+    );
+    const plain = await decryptWith(passphrase, encrypted);
+    if (!expected || (await sha256Hex(plain)).toLowerCase() === expected)
+      await writeCachedShard(path, encrypted);
+    return plain;
+  };
+
+  const start = (index: number): Promise<Uint8Array> => {
+    let p = inflight.get(index);
+    if (!p) {
+      p = load(index);
+      inflight.set(index, p);
+      // A lookahead nobody awaits (restore stopped early) must not surface as
+      // an unhandled rejection.
+      p.catch(() => undefined);
+    }
+    return p;
+  };
+
+  return {
     fetch: async (index) => {
-      if (options.signal?.aborted)
-        throw new DOMException(
-          "The Telegram restore was cancelled before data was written.",
-          "AbortError",
-        );
-      const shard = ordered[index];
-      if (!shard) return null;
-      const encrypted = await downloadChunk(
-        shard.botToken ?? cfg.botToken,
-        shard.fileId,
-        {
-          signal: options.signal,
-          onRetry: (retry) =>
-            options.onProgress?.({ phase: "downloading", retry }),
-        },
-      );
-      return decryptWith(options.passphrase, encrypted);
+      if (signal?.aborted) throw cancelled();
+      if (!ordered[index]) return null;
+      const current = start(index);
+      if (ordered[index + 1]) start(index + 1);
+      try {
+        return await current;
+      } finally {
+        inflight.delete(index);
+      }
     },
   };
-  return { session: set.session, top, shards };
 }
 
 /** A pull-based shard source: fetch(i) returns shard i's bytes, or null
@@ -5178,6 +5537,8 @@ export async function restoreFullBackupSharded(
         encrypted: true,
       },
     );
+    // Everything is restored: the encrypted shard cache has done its job.
+    await clearTelegramRestoreCache();
     return result;
   } catch (e) {
     op.finish("error", "Telegram sharded restore failed", {
