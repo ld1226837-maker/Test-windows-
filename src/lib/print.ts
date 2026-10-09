@@ -203,6 +203,9 @@ export type PrintSettings = {
   upiPayeeName: string;
   /** Editable bank handle (after @ in the VPA). */
   upiBankHandle: string;
+  /** Put the bill's amount into the UPI link/QR (`am`) so the payer's app
+   * opens with it filled in. Off = payer types the amount themselves. */
+  upiPrefillAmount: boolean;
   /** Which UPI app chips to show under the QR (editable — the shop picks
    * whichever apps their customers actually use). Defaults to Google Pay +
    * PhonePe; empty/corrupted settings fall back to the same default. */
@@ -254,6 +257,7 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   upiId: "",
   upiPayeeName: "",
   upiBankHandle: "",
+  upiPrefillAmount: true,
   upiApps: DEFAULT_UPI_APPS,
   thermalColorMode: "bw",
 };
@@ -431,6 +435,10 @@ export function normalizePrintSettings(value: unknown): PrintSettings {
       DEFAULT_PRINT_SETTINGS.upiBankHandle,
     ).slice(0, 40),
     upiApps,
+    upiPrefillAmount: savedBoolean(
+      saved["upiPrefillAmount"],
+      DEFAULT_PRINT_SETTINGS.upiPrefillAmount,
+    ),
     thermalColorMode,
   };
 }

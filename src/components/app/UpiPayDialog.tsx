@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { money } from "@/lib/money";
 import { upiUri } from "@/lib/receipt-upi";
+import { usePrintSettings } from "@/lib/print";
 
 /** Pay-by-UPI with two choices: open your own UPI app (self pay), or show a
  * QR for the customer to scan. The QR carries the amount, and for split
@@ -32,7 +33,15 @@ export function UpiPayDialog({
   amount: number;
 }) {
   const [qr, setQr] = useState<string | null>(null);
-  const uri = upiUri({ upiId: upiId ?? "", payeeName, note, amount });
+  const { settings } = usePrintSettings();
+  const prefill = settings.upiPrefillAmount !== false;
+  const uri = upiUri({
+    upiId: upiId ?? "",
+    payeeName,
+    note,
+    amount,
+    prefillAmount: prefill,
+  });
   useEffect(() => {
     if (open)
       QRCode.toDataURL(uri, { width: 260, margin: 1 })
@@ -67,8 +76,9 @@ export function UpiPayDialog({
             <p className="text-sm text-muted-foreground">Building QR...</p>
           )}
           <p className="text-center text-sm text-muted-foreground">
-            Scanning pays exactly {money(amount)} - the UPI part only when you
-            split cash + online.
+            {prefill
+              ? `Scanning pays exactly ${money(amount)} - the UPI part only when you split cash + online.`
+              : `Amount is not filled in - the payer enters ${money(amount)} themselves (turn on "Prefill amount" in Settings to change this).`}
           </p>
         </div>
         <div className="flex justify-end gap-2">

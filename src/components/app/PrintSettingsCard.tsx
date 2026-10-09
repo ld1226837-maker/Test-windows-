@@ -452,6 +452,12 @@ export function PrintSettingsCard({
                   Change
                 </Button>
               </div>
+              <SettingsSwitchRow
+                label="Prefill amount in UPI QR / link"
+                hint="On: the payer's UPI app opens with the bill amount filled in. Off: the payer types the amount themselves (useful for advances and part payments)."
+                checked={settings.upiPrefillAmount}
+                onCheckedChange={(v) => set("upiPrefillAmount", v)}
+              />
               {settings.upiId &&
                 !/^[\w.-]{2,}@[a-zA-Z]{2,}/.test(settings.upiId) && (
                   <p className="text-xs text-amber-600">

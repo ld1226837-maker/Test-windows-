@@ -60,6 +60,8 @@ export function upiUri(opts: {
   payeeName?: string | undefined;
   note?: string | undefined;
   amount?: number | undefined;
+  /** false = leave `am` out even when an amount is given (default true). */
+  prefillAmount?: boolean | undefined;
 }): string {
   // Build the query by hand with encodeURIComponent: URLSearchParams
   // serializes spaces as "+", which several UPI apps parse literally
@@ -81,7 +83,7 @@ export function upiUri(opts: {
     );
   add("cu", "INR");
   if (opts.note?.trim()) add("tn", opts.note.trim().slice(0, 50));
-  if (opts.amount && opts.amount > 0)
+  if (opts.prefillAmount !== false && opts.amount && opts.amount > 0)
     add("am", String(Math.round(opts.amount)));
   return `upi://pay?${parts.join("&")}`;
 }
@@ -304,6 +306,8 @@ export type UpiPanelOpts = {
   /** Pre-formatted balance, e.g. "₹ 2,520.00". Null/absent = nothing due. */
   balanceText?: string | null;
   amount?: number | null;
+  /** false = QR carries no amount (payer types it). Default true. */
+  prefillAmount?: boolean;
   /** PAID / UNPAID / PARTIAL, straight off the bill's totals. */
   status?: string;
   scale: number;
@@ -405,6 +409,7 @@ export function drawUpiPanel(pdf: jsPDF, o: UpiPanelOpts): number {
     payeeName: o.payeeName,
     note: o.reference ? `Bill ${o.reference}` : "",
     amount: o.amount ?? undefined,
+    prefillAmount: o.prefillAmount,
   });
   const paid = (o.status || "").toUpperCase() === "PAID";
   const dark: RGB = mono ? [0, 0, 0] : [10, 10, 10];
