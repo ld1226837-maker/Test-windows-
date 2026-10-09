@@ -36,15 +36,16 @@ describe("stale newest pointer", () => {
     );
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            ok: false,
-            error_code: 400,
-            description: "Bad Request: message to forward not found",
-          }),
-          { status: 400 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error_code: 400,
+              description: "Bad Request: message to forward not found",
+            }),
+            { status: 400 },
+          ),
       ),
     );
   });
