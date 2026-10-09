@@ -724,7 +724,7 @@ function renderBoxed(
           variant: wide ? "wide" : "roll",
           mono: !wantColor,
           apps: s.upiApps,
-        prefillAmount: s.upiPrefillAmount,
+          prefillAmount: s.upiPrefillAmount,
           navy,
           gold,
           fill,
