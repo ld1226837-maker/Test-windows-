@@ -658,3 +658,40 @@ export function receiptModeLabel(
   const rows = receiptIndex.get(`${parentType}:${parentId}`);
   return (rows && describePaymentSplit(rows)) || fallback;
 }
+
+const ADVANCE_BATCH_MS = 1000;
+
+/**
+ * The advance a receipt's "Advance paid" line should print: the money the
+ * customer actually handed over up front (the first receipt, including each
+ * part of a split such as Cash + UPI), NOT the running total collected so far.
+ * A balance settled later is stored as its own later payment row, so it is left
+ * out here and the line no longer turns into the remaining amount once the
+ * record is marked paid.
+ *
+ * DISPLAY ONLY — nothing reads this for a calculation. `fallback` (the
+ * caller's existing figure) is returned when no payment rows are on file, so
+ * older records print exactly what they did before.
+ */
+export function receiptAdvanceAmount(
+  parentType: PaymentParentType,
+  parentId: string,
+  fallback: number,
+): number {
+  const rows = (receiptIndex.get(`${parentType}:${parentId}`) ?? [])
+    .filter((r) => Number(r.amount) > 0)
+    .slice()
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const first = rows[0];
+  if (!first) return fallback;
+  // One receipt (or one split receipt) is written in a single transaction, so
+  // its parts are stamped within milliseconds of each other.
+  const t0 = Date.parse(first.created_at);
+  const initial = rows.filter(
+    (r) =>
+      !Number.isFinite(t0) ||
+      Math.abs(Date.parse(r.created_at) - t0) <= ADVANCE_BATCH_MS,
+  );
+  const sum = initial.reduce((n, r) => n + Number(r.amount), 0);
+  return sum > 0 ? Math.round(sum * 100) / 100 : fallback;
+}
