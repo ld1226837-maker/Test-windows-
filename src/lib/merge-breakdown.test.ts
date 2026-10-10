@@ -18,7 +18,9 @@ const view = (b: MergedBreakdown | null | undefined, paid: number, n = 2) =>
 describe("mergedBillBreakdown (display-only split of paid)", () => {
   it("Case A: snacks paid -> Advance 320, Snacks paid 120, balance 1840", () => {
     const r = view(bd(120), 440)!;
-    expect([r.advancePaid, r.snacksPaid, r.balanceDue]).toEqual([320, 120, 1840]);
+    expect([r.advancePaid, r.snacksPaid, r.balanceDue]).toEqual([
+      320, 120, 1840,
+    ]);
     expect(r.groups.map((g) => g.kind)).toEqual(["turf", "snack"]);
   });
   it("Case B: snacks unpaid -> no Snacks paid, balance 1960", () => {
@@ -27,7 +29,9 @@ describe("mergedBillBreakdown (display-only split of paid)", () => {
   });
   it("partly paid snack shows only the paid part", () => {
     const r = view(bd(60), 380)!;
-    expect([r.advancePaid, r.snacksPaid, r.balanceDue]).toEqual([320, 60, 1900]);
+    expect([r.advancePaid, r.snacksPaid, r.balanceDue]).toEqual([
+      320, 60, 1900,
+    ]);
   });
   it("no snacks / no advance / fully settled later", () => {
     const none = mergedBillBreakdown({
@@ -36,11 +40,17 @@ describe("mergedBillBreakdown (display-only split of paid)", () => {
       grandTotal: 2160,
       itemCount: 1,
     })!;
-    expect([none.advancePaid, none.snacksPaid, none.balanceDue]).toEqual([320, 0, 1840]);
+    expect([none.advancePaid, none.snacksPaid, none.balanceDue]).toEqual([
+      320, 0, 1840,
+    ]);
     const noAdv = view(bd(120, 0), 120)!;
     expect([noAdv.advancePaid, noAdv.snacksPaid]).toEqual([0, 120]);
     const settled = view(bd(120), 2280)!;
-    expect([settled.advancePaid, settled.snacksPaid, settled.balanceDue]).toEqual([320, 120, 0]);
+    expect([
+      settled.advancePaid,
+      settled.snacksPaid,
+      settled.balanceDue,
+    ]).toEqual([320, 120, 0]);
   });
   it("never shows more than was paid", () => {
     const r = view(bd(120), 200)!;
