@@ -30,15 +30,10 @@ import { normalizeReceivedPaymentMode } from "./payments";
 const BATCH_MS = 1000;
 
 export type TurfBookingKind =
-  | "Turf only"
-  | "Turf + snacks"
-  | "Merged into bill";
+  "Turf only" | "Turf + snacks" | "Merged into bill";
 
 export type RemainingStatus =
-  | "Remaining paid"
-  | "Part paid"
-  | "Not paid"
-  | "n/a";
+  "Remaining paid" | "Part paid" | "Not paid" | "n/a";
 
 export type PaymentSplitLabel =
   | "Cash only"
@@ -363,7 +358,11 @@ export function turfPaymentsSheetRows(
 ): Record<string, string | number>[] {
   const out: Record<string, string | number>[] = [];
   for (const b of bookings) {
-    const bp = bookingPaymentBreakdown(b, byBooking.get(b.id) ?? [], tabEntries);
+    const bp = bookingPaymentBreakdown(
+      b,
+      byBooking.get(b.id) ?? [],
+      tabEntries,
+    );
     for (const l of bp.lines) {
       out.push({
         "Booking ID": b.booking_no,

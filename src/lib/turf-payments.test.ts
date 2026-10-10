@@ -195,7 +195,7 @@ describe("export helpers", () => {
     const byBooking = groupBookingPayments(rows);
     const sheet = turfPaymentsSheetRows([b], byBooking);
     const cols = turfBookingExportColumns(b, rows);
-    const sheetTotal = sheet.reduce((s, r) => s + Number(r.Amount), 0);
+    const sheetTotal = sheet.reduce((s, r) => s + Number(r["Amount"]), 0);
     expect(sheetTotal).toBe(
       Number(cols["Total collected - Cash"]) +
         Number(cols["Total collected - Online"]),
@@ -267,7 +267,9 @@ describe("full payment in one collection", () => {
       pay(600, "UPI", "2026-09-03T10:00:00.000Z", "2026-09-03"),
     ];
     const sheet = turfPaymentsSheetRows([b], groupBookingPayments(rows));
-    expect(sheet.map((r) => r["Payment stage"])).toEqual(["Advance", "Remaining"]);
+    expect(sheet.map((r) => r["Payment stage"])).toEqual([
+      "Advance",
+      "Remaining",
+    ]);
   });
 });
-

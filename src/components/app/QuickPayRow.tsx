@@ -4,10 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { money, type Bill } from "@/lib/biz";
-import {
-  useCollectBillPayment,
-  useCollectBookingPayment,
-} from "@/lib/collect";
+import { useCollectBillPayment, useCollectBookingPayment } from "@/lib/collect";
 import { billDue, bookingDue } from "@/lib/dues";
 import type { TurfBooking } from "@/lib/ops";
 import { cleanAmountInput, rupees } from "@/lib/money";
@@ -51,7 +48,9 @@ export function QuickPayRow({ bill }: { bill: Bill }) {
     <QuickPayControls
       due={due}
       label={bill.invoice_no}
-      onCollect={(entries) => collect.mutateAsync({ bill, tabEntries, entries })}
+      onCollect={(entries) =>
+        collect.mutateAsync({ bill, tabEntries, entries })
+      }
     />
   );
 }
@@ -160,8 +159,7 @@ export function QuickPayControls({
     }
   };
 
-  const payFull = (mode: "Cash" | "UPI") =>
-    payEntries([{ amount: due, mode }]);
+  const payFull = (mode: "Cash" | "UPI") => payEntries([{ amount: due, mode }]);
 
   const askFull = (mode: "Cash" | "UPI") => {
     if (confirmSummary) setPending([{ amount: due, mode }]);
@@ -259,8 +257,8 @@ export function QuickPayControls({
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm payment</AlertDialogTitle>
             <AlertDialogDescription>
-              Record {money(due)} for {label} as paid in {confirmFull}
-              ? This writes payment rows and updates reports.
+              Record {money(due)} for {label} as paid in {confirmFull}? This
+              writes payment rows and updates reports.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -357,7 +357,11 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
         "summary",
         true,
       ),
-      p("surface.turf-pay-confirm.due-after", "Due after this payment", "summary"),
+      p(
+        "surface.turf-pay-confirm.due-after",
+        "Due after this payment",
+        "summary",
+      ),
       p("surface.turf-pay-confirm.actions", "Cancel & confirm", "action", true),
     ],
   },
