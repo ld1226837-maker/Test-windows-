@@ -42,11 +42,7 @@ import {
   receiptModeLabel,
   receiptPaymentRows,
 } from "./payments";
-import {
-  modeBreakdown,
-  modeBreakdownOf,
-  modeLines,
-} from "./payment-breakdown";
+import { modeBreakdown, modeBreakdownOf, modeLines } from "./payment-breakdown";
 import { mergedBillBreakdown } from "./merge-breakdown";
 import { readAppSettings } from "./settings";
 

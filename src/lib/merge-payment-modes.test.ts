@@ -1,7 +1,12 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it } from "vitest";
 
-import { buildMergedItems, mergeIntoBill, previewMerge, unmergeBill } from "./merge";
+import {
+  buildMergedItems,
+  mergeIntoBill,
+  previewMerge,
+  unmergeBill,
+} from "./merge";
 import { billReceipt } from "./receipt";
 import { modeBreakdown, modeLines } from "./payment-breakdown";
 import { setReceiptPayments } from "./payments";
@@ -42,7 +47,13 @@ const sale = (over: Partial<SnackSaleRow> = {}): SnackSaleRow =>
     sale_date: "2026-09-01",
     customer_name: "Ravi",
     items: [
-      { item_name: "Chips", qty: 2, unit_price: 100, amount: 200, cost_price: 50 },
+      {
+        item_name: "Chips",
+        qty: 2,
+        unit_price: 100,
+        amount: 200,
+        cost_price: 50,
+      },
     ],
     total: 200,
     profit: 100,
@@ -96,8 +107,22 @@ describe("merged bill keeps the payment mode data", () => {
     await db.snack_sales.add(s);
     // Turf advance ₹400 split Cash 300 + UPI 100; snack ₹200 paid in UPI.
     const rows = [
-      pay("pm-p1", "turf_booking", b.id, 300, "Cash", "2026-09-01T10:00:00.000Z"),
-      pay("pm-p2", "turf_booking", b.id, 100, "UPI", "2026-09-01T10:00:00.100Z"),
+      pay(
+        "pm-p1",
+        "turf_booking",
+        b.id,
+        300,
+        "Cash",
+        "2026-09-01T10:00:00.000Z",
+      ),
+      pay(
+        "pm-p2",
+        "turf_booking",
+        b.id,
+        100,
+        "UPI",
+        "2026-09-01T10:00:00.100Z",
+      ),
       pay("pm-p3", "snack_sale", s.id, 200, "UPI", "2026-09-01T10:05:00.000Z"),
     ];
     await db.payments.bulkAdd(rows);
@@ -105,8 +130,17 @@ describe("merged bill keeps the payment mode data", () => {
     const built = buildMergedItems([b], [s] as never);
     const preview = previewMerge({
       total: built.total,
-      bookings: [{ id: b.id, advance_paid: 400, payment_mode: "Cash", booking_date: b.booking_date }],
-      sales: [{ id: s.id, total: 200, payment_mode: "UPI", sale_date: s.sale_date }],
+      bookings: [
+        {
+          id: b.id,
+          advance_paid: 400,
+          payment_mode: "Cash",
+          booking_date: b.booking_date,
+        },
+      ],
+      sales: [
+        { id: s.id, total: 200, payment_mode: "UPI", sale_date: s.sale_date },
+      ],
       tabEntries: [],
       payments: rows as never,
     });
@@ -128,7 +162,10 @@ describe("merged bill keeps the payment mode data", () => {
     });
 
     // Saved bill carries the same money, by mode.
-    const billRows = await db.payments.where("parent_id").equals(bill.id).toArray();
+    const billRows = await db.payments
+      .where("parent_id")
+      .equals(bill.id)
+      .toArray();
     const saved = modeBreakdown(billRows);
     expect(saved.cash).toBe(preview.received.cash);
     expect(saved.online).toBe(preview.received.online);
@@ -148,7 +185,9 @@ describe("merged bill keeps the payment mode data", () => {
 
     // Un-merge removes the copied bill rows; sources keep theirs.
     await unmergeBill(bill.id);
-    expect(await db.payments.where("parent_id").equals(bill.id).count()).toBe(0);
+    expect(await db.payments.where("parent_id").equals(bill.id).count()).toBe(
+      0,
+    );
     expect(await db.payments.where("parent_id").equals(b.id).count()).toBe(2);
     expect(await db.payments.where("parent_id").equals(s.id).count()).toBe(1);
   });

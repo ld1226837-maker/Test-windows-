@@ -21,7 +21,8 @@ export function PaymentModeSummary({
     >
       {lines.map((l) => (
         <p key={l.label}>
-          {l.label}: <span className="font-medium text-foreground">{l.value}</span>
+          {l.label}:{" "}
+          <span className="font-medium text-foreground">{l.value}</span>
         </p>
       ))}
     </div>

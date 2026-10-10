@@ -855,7 +855,11 @@ export function ReportsTab() {
                 ? modeExportColumns(
                     modeBreakdown(receiptPaymentRows("snack_sale", s.id)),
                   )
-                : { "Paid - Cash": "", "Paid - Online": "", "Split detail": "" }),
+                : {
+                    "Paid - Cash": "",
+                    "Paid - Online": "",
+                    "Split detail": "",
+                  }),
               // Mirrors the Turf bookings sheet's "Status" column above —
               // a snack sale has no multi-value status of its own, just
               // sold vs. voided (see SnackSale.cancelled in ops.ts).
@@ -1303,7 +1307,11 @@ export function ReportsTab() {
                 ? modeExportColumns(
                     modeBreakdown(receiptPaymentRows("snack_sale", s.id)),
                   )
-                : { "Paid - Cash": "", "Paid - Online": "", "Split detail": "" }),
+                : {
+                    "Paid - Cash": "",
+                    "Paid - Online": "",
+                    "Split detail": "",
+                  }),
               // Mirrors the Turf bookings sheet's "Status" column above —
               // a snack sale has no multi-value status of its own, just
               // sold vs. voided (see SnackSale.cancelled in ops.ts).

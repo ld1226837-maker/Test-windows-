@@ -5,12 +5,7 @@ import { netTabAmountFor } from "./dues";
 import { db } from "./localdb";
 import { rupees } from "./money";
 import type { PaymentEntry } from "./payments";
-import {
-  TAB_REF_BILL,
-  ensureTab,
-  tabBalanceOf,
-  writeTabEntries,
-} from "./tabs";
+import { TAB_REF_BILL, ensureTab, tabBalanceOf, writeTabEntries } from "./tabs";
 
 /**
  * Collect the balance a MERGED bill put on the customer's tab, straight from
