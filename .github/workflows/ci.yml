@@ -25,6 +25,8 @@ env:
   CI: "true"
   NODE_VERSION: "22"
   FORCE_COLOR: "1"
+  # The app computes business dates in IST; run tests in the same zone.
+  TZ: "Asia/Kolkata"
   # Hard size gates: the build fails (and nothing is published) above these.
   MAX_INSTALLER_MB: "10"   # Windows setup.exe
   MAX_APK_MB: "75"         # each Android APK (one per CPU architecture)

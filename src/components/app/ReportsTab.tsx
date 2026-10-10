@@ -85,6 +85,12 @@ import { bookingGrossTotal, bookingTaxable } from "@/lib/biz";
 import { moneyAxis, rupees } from "@/lib/money";
 import { receiptModeLabel } from "@/lib/payments";
 import {
+  groupBookingPayments,
+  TURF_EXPORT_MONEY_COLUMNS,
+  turfBookingExportColumns,
+  turfPaymentsSheetRows,
+} from "@/lib/turf-payments";
+import {
   compareBy,
   sortSuffix,
   useSortState,
@@ -551,6 +557,7 @@ export function ReportsTab() {
         isCurrency: false,
       },
     ];
+    const byBooking = groupBookingPayments(payments);
     exportWorkbook(
       [
         {
@@ -729,17 +736,27 @@ export function ReportsTab() {
         {
           name: "Outstanding dues",
           autofilter: true,
-          moneyColumns: ["Total", "Paid", "Due"],
-          rows: dues.map((b) => ({
-            "Booking ID": b.booking_no,
-            Date: formatDMY(b.booking_date),
-            Customer: b.customer_name,
-            Phone: b.phone ?? "",
-            Total: b.gross,
-            Paid: b.paid,
-            Due: b.due,
-            "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
-          })),
+          moneyColumns: ["Total", "Paid", "Due", "Remaining collected"],
+          rows: dues.map((b) => {
+            const extra = turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            );
+            return {
+              "Booking ID": b.booking_no,
+              Date: formatDMY(b.booking_date),
+              Customer: b.customer_name,
+              Phone: b.phone ?? "",
+              Total: b.gross,
+              Paid: b.paid,
+              Due: b.due,
+              "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
+              "Booking type": extra["Booking type"] ?? "",
+              "Remaining collected": extra["Remaining collected"] ?? 0,
+              "Remaining status": extra["Remaining status"] ?? "",
+            };
+          }),
         },
         // Raw record-level sheets — every row currently loaded (the app's
         // active year window, not just the selected report month), so an
@@ -755,6 +772,7 @@ export function ReportsTab() {
             "Total",
             "Advance paid",
             "Balance due",
+            ...TURF_EXPORT_MONEY_COLUMNS,
           ],
           rows: bookings.map((b) => ({
             "Booking ID": b.booking_no,
@@ -791,7 +809,20 @@ export function ReportsTab() {
             "Merged into bill": b.merged_into_bill_id
               ? "Yes — see Bills"
               : "No",
+            // Advance vs remaining collected, and the Cash / Online / split
+            // pay figures — appended after the original columns.
+            ...turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            ),
           })),
+        },
+        {
+          name: "Turf payments",
+          autofilter: true,
+          moneyColumns: ["Amount"],
+          rows: turfPaymentsSheetRows(bookings, byBooking, tabEntries),
         },
         {
           name: "Snack sales",
@@ -955,6 +986,7 @@ export function ReportsTab() {
       caption: "All time",
     });
 
+    const byBooking = groupBookingPayments(payments);
     await exportWorkbook(
       [
         {
@@ -1157,17 +1189,27 @@ export function ReportsTab() {
         {
           name: "Outstanding dues",
           autofilter: true,
-          moneyColumns: ["Total", "Paid", "Due"],
-          rows: dues.map((b) => ({
-            "Booking ID": b.booking_no,
-            Date: formatDMY(b.booking_date),
-            Customer: b.customer_name,
-            Phone: b.phone ?? "",
-            Total: b.gross,
-            Paid: b.paid,
-            Due: b.due,
-            "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
-          })),
+          moneyColumns: ["Total", "Paid", "Due", "Remaining collected"],
+          rows: dues.map((b) => {
+            const extra = turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            );
+            return {
+              "Booking ID": b.booking_no,
+              Date: formatDMY(b.booking_date),
+              Customer: b.customer_name,
+              Phone: b.phone ?? "",
+              Total: b.gross,
+              Paid: b.paid,
+              Due: b.due,
+              "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
+              "Booking type": extra["Booking type"] ?? "",
+              "Remaining collected": extra["Remaining collected"] ?? 0,
+              "Remaining status": extra["Remaining status"] ?? "",
+            };
+          }),
         },
         // Raw record-level sheets — these are already every row currently
         // loaded (not month-filtered) in the month-scoped export above too,
@@ -1182,6 +1224,7 @@ export function ReportsTab() {
             "Total",
             "Advance paid",
             "Balance due",
+            ...TURF_EXPORT_MONEY_COLUMNS,
           ],
           rows: bookings.map((b) => ({
             "Booking ID": b.booking_no,
@@ -1209,7 +1252,20 @@ export function ReportsTab() {
             "Merged into bill": b.merged_into_bill_id
               ? "Yes — see Bills"
               : "No",
+            // Advance vs remaining collected, and the Cash / Online / split
+            // pay figures — appended after the original columns.
+            ...turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            ),
           })),
+        },
+        {
+          name: "Turf payments",
+          autofilter: true,
+          moneyColumns: ["Amount"],
+          rows: turfPaymentsSheetRows(bookings, byBooking, tabEntries),
         },
         {
           name: "Snack sales",

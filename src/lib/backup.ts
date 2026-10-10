@@ -30,6 +30,7 @@ import {
   validateBackupTablesEnvelope,
   isSafeReceiptPath,
 } from "./backup-validate";
+import { moveEarlyMorningToPreviousDay } from "./business-day";
 import { reloadLayoutFromStorage } from "./layout-prefs";
 import {
   encryptFullBackupBytes,
@@ -96,8 +97,16 @@ function normalizeBackupForCurrentSchema(backup: BackupFile): BackupFile {
   const schema = Number(backup.schema_version ?? 1);
   if (!Number.isSafeInteger(schema) || schema < 1)
     throw new Error("Backup has an invalid schema version");
-  if (schema >= 5) return backup;
+  if (schema >= 20) return backup;
   const tables = { ...backup.tables };
+  // v20 (6 AM–6 AM business day): a 12 AM–6 AM booking now belongs to the
+  // previous date. Older backups hold such rows under their calendar date.
+  if (Array.isArray(tables["turf_bookings"])) {
+    tables["turf_bookings"] = tables["turf_bookings"].map((row) =>
+      row ? moveEarlyMorningToPreviousDay(row) : row,
+    );
+  }
+  if (schema >= 5) return { ...backup, tables };
   if (Array.isArray(tables["snack_sales"])) {
     tables["snack_sales"] = tables["snack_sales"].map((row) =>
       row && row["merged_into_bill_id"] === undefined

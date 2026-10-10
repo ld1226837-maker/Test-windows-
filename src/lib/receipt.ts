@@ -38,6 +38,7 @@ import {
 import { printPdfBytesAsImages } from "./print-raster";
 import { buildPremiumReceiptPdf } from "./receipt-premium";
 import { receiptAdvanceAmount, receiptModeLabel } from "./payments";
+import { mergedBillBreakdown } from "./merge-breakdown";
 import { readAppSettings } from "./settings";
 
 /** PDF-safe money: helvetica has no rupee glyph, and receipts drop paise.
@@ -1229,6 +1230,12 @@ export function billReceipt(bill: Bill): ReceiptDoc {
   const taxAmount = grandTotal - rupees(bill.total);
   const paid = billPaidAmount(bill);
   const due = Math.max(0, grandTotal - paid);
+  const merged = mergedBillBreakdown({
+    breakdown: bill.merged_breakdown,
+    paid,
+    grandTotal,
+    itemCount: bill.items.length,
+  });
   // Narrow thermal rolls get the abbreviated unit ("2.5 L" instead of
   // "2.5 litre") in the QTY column so the value never has to be clipped with
   // an ellipsis to fit. Sheets (A4/A5/Letter) have plenty of column width and
@@ -1240,32 +1247,61 @@ export function billReceipt(bill: Bill): ReceiptDoc {
     dateText: formatDMY(bill.bill_date),
     customer: bill.customer_name,
     phone: bill.customer_phone,
-    lines: [
-      ...bill.items.map((it) => ({
-        label: it.item || "Item",
-        sub: `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
-        qty: `${it.qty} ${it.unit ?? "kg"}`,
-        amount: it.total,
-      })),
-      // Itemized alongside the products, in addition to the totals block
-      // below, so offer/advance show as line entries on the printed bill.
-      ...(bill.discount
-        ? [{ label: "Offer / Discount", amount: -bill.discount }]
-        : []),
-      ...(paid
-        ? [
-            {
-              label: "Advance paid",
-              // Display only: the advance actually entered, not the running
-              // paid total (which becomes the full amount once settled).
-              amount: -Math.min(
-                paid,
-                receiptAdvanceAmount("bill", bill.id, paid),
-              ),
-            },
-          ]
-        : []),
-    ],
+    lines: merged
+      ? [
+          // Merged bill with a stored breakdown: turf line(s), then each snack
+          // bill's items under a "Snacks" label, then offer, turf advance and
+          // snacks paid. Display only — same grand total / paid / balance.
+          ...merged.groups.flatMap((g) =>
+            bill.items.slice(g.start, g.end).map((it) => ({
+              label:
+                g.kind === "snack"
+                  ? `Snacks \u2014 ${it.item || "Item"}`
+                  : it.item || "Item",
+              sub:
+                g.kind === "snack" && g.bill_no
+                  ? `${g.bill_no} \u00b7 ${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`
+                  : `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
+              qty: `${it.qty} ${it.unit ?? "kg"}`,
+              amount: it.total,
+            })),
+          ),
+          ...(bill.discount
+            ? [{ label: "Offer / Discount", amount: -bill.discount }]
+            : []),
+          ...(merged.advancePaid > 0
+            ? [{ label: "Advance paid", amount: -merged.advancePaid }]
+            : []),
+          ...(merged.snacksPaid > 0
+            ? [{ label: "Snacks paid", amount: -merged.snacksPaid }]
+            : []),
+        ]
+      : [
+          ...bill.items.map((it) => ({
+            label: it.item || "Item",
+            sub: `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
+            qty: `${it.qty} ${it.unit ?? "kg"}`,
+            amount: it.total,
+          })),
+          // Itemized alongside the products, in addition to the totals block
+          // below, so offer/advance show as line entries on the printed bill.
+          ...(bill.discount
+            ? [{ label: "Offer / Discount", amount: -bill.discount }]
+            : []),
+          ...(paid
+            ? [
+                {
+                  label: "Advance paid",
+                  // Display only: the advance actually entered, not the running
+                  // paid total (which becomes the full amount once settled).
+                  amount: -Math.min(
+                    paid,
+                    receiptAdvanceAmount("bill", bill.id, paid),
+                  ),
+                },
+              ]
+            : []),
+        ],
     totals: [
       { label: "Subtotal", value: pmoney(bill.subtotal) },
       ...(bill.discount

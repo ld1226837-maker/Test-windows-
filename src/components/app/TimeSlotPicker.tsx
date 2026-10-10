@@ -15,9 +15,12 @@ import {
 } from "@/components/ui/popover";
 import { cn, localDateStr } from "@/lib/utils";
 import { MAX_COURTS } from "@/lib/ops";
+import { canEndAt } from "@/lib/slot-selection";
 
 import {
-  DAY_PARTS,
+  PICKER_PARTS,
+  partWindow,
+  businessDateOf,
   type DayPartId,
   SLOT_INTERVALS,
   minuteLabel,
@@ -89,11 +92,13 @@ export function TimeSlotPicker({
     });
   }, [date]);
 
-  const todayIso = iso(new Date());
-  const part = DAY_PARTS.find((p) => p.id === dayPart) ?? DAY_PARTS[0];
+  const part = PICKER_PARTS.find((p) => p.id === dayPart) ?? PICKER_PARTS[0]!;
+  // Slots are BUSINESS-DAY minutes (6 AM = 360 … 12 AM = 1440 … 5:30 AM =
+  // 1770). Late Night (12–6 AM) comes last and belongs to THIS date's night.
+  const [partFrom, partTo] = partWindow(part);
   const slots = Array.from(
-    { length: ((part.to - part.from) * 60) / interval },
-    (_, i) => part.from * 60 + i * interval,
+    { length: (partTo - partFrom) / interval },
+    (_, i) => partFrom + i * interval,
   );
   const booked = new Set(bookedSlots);
 
@@ -101,10 +106,12 @@ export function TimeSlotPicker({
   const endBoundary =
     selected.length > 0 ? Math.max(...selected) + interval : null;
 
-  const partIndex = DAY_PARTS.findIndex((p) => p.id === part.id);
+  const partIndex = PICKER_PARTS.findIndex((p) => p.id === part.id);
   const goPart = (dir: 1 | -1) => {
     const next =
-      DAY_PARTS[(partIndex + dir + DAY_PARTS.length) % DAY_PARTS.length]!;
+      PICKER_PARTS[
+        (partIndex + dir + PICKER_PARTS.length) % PICKER_PARTS.length
+      ]!;
     onDayPartChange(next.id);
   };
   // A ref, not a render-scope variable: a re-render between touchstart and
@@ -185,7 +192,7 @@ export function TimeSlotPicker({
           size="sm"
           variant="outline"
           className="shrink-0"
-          onClick={() => onDateChange(todayIso)}
+          onClick={() => onDateChange(businessDateOf())}
         >
           Today
         </Button>
@@ -257,10 +264,10 @@ export function TimeSlotPicker({
       <div
         className="grid gap-1 rounded-xl bg-muted/70 p-1"
         style={{
-          gridTemplateColumns: `repeat(${DAY_PARTS.length}, minmax(0, 1fr))`,
+          gridTemplateColumns: `repeat(${PICKER_PARTS.length}, minmax(0, 1fr))`,
         }}
       >
-        {DAY_PARTS.map((p) => {
+        {PICKER_PARTS.map((p) => {
           const Icon = p.icon;
           const active = p.id === dayPart;
           return (
@@ -345,7 +352,8 @@ export function TimeSlotPicker({
         )}
       >
         {slots.map((m) => {
-          const isBooked = booked.has(m);
+          const isBooked =
+            booked.has(m) && !canEndAt(selected, m, interval, booked);
           const isSelected = selected.includes(m);
           const isEnd = !isSelected && endBoundary === m;
           const freeCourts = freeCourtsBySlot?.get(m);
@@ -390,9 +398,44 @@ export function TimeSlotPicker({
         })}
       </div>
 
+      {/* The closing end point of the day's last two parts — 12 AM after
+          Night, 6 AM after Late Night. Every other part closes on the first
+          slot of the next tab, which is already tappable as an end. */}
+      {(part.id === "night" || part.id === "latenight") &&
+        selected.length > 0 &&
+        (() => {
+          const m = partTo;
+          const canEnd = canEndAt(selected, m, interval, booked);
+          const isEndNow = endBoundary === m;
+          return (
+            <button
+              type="button"
+              disabled={!canEnd && !isEndNow}
+              onClick={() => onToggleSlot(m)}
+              className={cn(
+                "w-full rounded-lg border py-2 text-xs font-medium transition-all",
+                isEndNow
+                  ? "border-2 border-dashed border-primary bg-primary/10 text-primary"
+                  : canEnd
+                    ? "frost-soft hover:border-primary hover:text-primary"
+                    : "cursor-not-allowed bg-muted text-muted-foreground opacity-60",
+              )}
+            >
+              {isEndNow ? "Ends " : "End at "}
+              {minuteLabel(m)}
+            </button>
+          );
+        })()}
+
+      {part.id === "latenight" && (
+        <p className="text-center text-[11px] text-muted-foreground">
+          After midnight — these hours are booked under this date's night.
+        </p>
+      )}
+
       {/* Pagination dots */}
       <div className="flex justify-center gap-1.5">
-        {DAY_PARTS.map((p) => (
+        {PICKER_PARTS.map((p) => (
           <button
             key={p.id}
             type="button"

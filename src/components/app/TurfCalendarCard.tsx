@@ -7,7 +7,7 @@ import { formatDMY, money } from "@/lib/biz";
 import { localDateStr } from "@/lib/utils";
 import { useTurfBookings, type TurfBooking } from "@/lib/ops";
 import { isFinancialBooking } from "@/lib/analytics";
-import { parseMinutes } from "@/lib/time-slot-utils";
+import { businessMinutes, parseMinutes } from "@/lib/time-slot-utils";
 import { LayoutPart, LayoutParts } from "./LayoutSection";
 import { CalendarMonthGrid } from "./CalendarMonthGrid";
 
@@ -23,7 +23,8 @@ const iso = localDateStr;
 const dayViewSortKey = (label: string | null) => {
   const mins = parseMinutes(label);
   if (mins === null) return -1;
-  return mins === 0 ? 1440 : mins;
+  // 6 AM -> 6 AM business day: 12–6 AM bookings sort after the night's 11 PM.
+  return businessMinutes(mins);
 };
 
 /** Month calendar of turf bookings: tap a day to see who is booked. */

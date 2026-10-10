@@ -68,12 +68,33 @@ export function TurfUtilizationCard({ bookings, totalCourts = 1 }: Props) {
     for (const b of inWindow) {
       const weekday = weekdayOf(b.booking_date);
       // Shared court math: splits a past-midnight booking across two days.
-      const segments = courtHourSegments(b).map((sg) => ({
-        weekday: (weekday + sg.dayOffset) % 7,
-        from: sg.from,
-        to: sg.to,
-        courts: sg.n,
-      }));
+      // Segments come in business-day minutes (360 … 1800); the day-part
+      // windows below are clock hours, so fold anything past midnight back
+      // onto 0–360 — it stays on the booking's own (business) weekday.
+      const segments = courtHourSegments(b).flatMap((sg) => {
+        const weekdayOf = (weekday + sg.dayOffset) % 7;
+        const out: {
+          weekday: number;
+          from: number;
+          to: number;
+          courts: number;
+        }[] = [];
+        if (sg.from < 1440)
+          out.push({
+            weekday: weekdayOf,
+            from: sg.from,
+            to: Math.min(sg.to, 1440),
+            courts: sg.n,
+          });
+        if (sg.to > 1440)
+          out.push({
+            weekday: weekdayOf,
+            from: Math.max(sg.from, 1440) - 1440,
+            to: sg.to - 1440,
+            courts: sg.n,
+          });
+        return out;
+      });
 
       for (const seg of segments) {
         for (const part of DAY_PARTS) {
