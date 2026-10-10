@@ -83,7 +83,8 @@ import { bookingCashCollected, bookingDue, isFinancialSale } from "@/lib/dues";
 import { useTabEntries } from "@/lib/tabs";
 import { bookingGrossTotal, bookingTaxable } from "@/lib/biz";
 import { moneyAxis, rupees } from "@/lib/money";
-import { receiptModeLabel } from "@/lib/payments";
+import { receiptModeLabel, receiptPaymentRows } from "@/lib/payments";
+import { modeBreakdown, modeExportColumns } from "@/lib/payment-breakdown";
 import {
   groupBookingPayments,
   TURF_EXPORT_MONEY_COLUMNS,
@@ -829,7 +830,7 @@ export function ReportsTab() {
           autofilter: true,
           moneyColumns: ["Unit price", "Amount", "Profit"],
           rows: sales.flatMap((s) =>
-            (s.items ?? []).map((it) => ({
+            (s.items ?? []).map((it, idx) => ({
               "Bill No": s.bill_no,
               Date: formatDMY(s.sale_date),
               Customer: s.customer_name ?? "",
@@ -850,6 +851,11 @@ export function ReportsTab() {
                 s.id,
                 s.payment_mode,
               ),
+              ...(idx === 0 && isFinancialSale(s)
+                ? modeExportColumns(
+                    modeBreakdown(receiptPaymentRows("snack_sale", s.id)),
+                  )
+                : { "Paid - Cash": "", "Paid - Online": "", "Split detail": "" }),
               // Mirrors the Turf bookings sheet's "Status" column above —
               // a snack sale has no multi-value status of its own, just
               // sold vs. voided (see SnackSale.cancelled in ops.ts).
@@ -1272,7 +1278,7 @@ export function ReportsTab() {
           autofilter: true,
           moneyColumns: ["Unit price", "Amount", "Profit"],
           rows: sales.flatMap((s) =>
-            (s.items ?? []).map((it) => ({
+            (s.items ?? []).map((it, idx) => ({
               "Bill No": s.bill_no,
               Date: formatDMY(s.sale_date),
               Customer: s.customer_name ?? "",
@@ -1293,6 +1299,11 @@ export function ReportsTab() {
                 s.id,
                 s.payment_mode,
               ),
+              ...(idx === 0 && isFinancialSale(s)
+                ? modeExportColumns(
+                    modeBreakdown(receiptPaymentRows("snack_sale", s.id)),
+                  )
+                : { "Paid - Cash": "", "Paid - Online": "", "Split detail": "" }),
               // Mirrors the Turf bookings sheet's "Status" column above —
               // a snack sale has no multi-value status of its own, just
               // sold vs. voided (see SnackSale.cancelled in ops.ts).

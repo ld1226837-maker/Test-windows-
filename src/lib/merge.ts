@@ -46,7 +46,12 @@ import {
   type TurfBookingRow,
 } from "./localdb";
 import { TAB_PAYMENT_MODE } from "./ops";
-import { effectivePaymentEntries, removePaymentsForParents } from "./payments";
+import {
+  effectivePaymentEntries,
+  removePaymentsForParents,
+  type EffectivePaymentEntry,
+} from "./payments";
+import { modeBreakdown, type ModeBreakdown } from "./payment-breakdown";
 import {
   TAB_REF_BILL,
   TAB_REF_MERGE_REVERSE,
@@ -82,6 +87,10 @@ export type MergePreview = {
   outstanding: number;
   /** What the tab balance changes by when "on tab" is ticked. */
   tabDelta: number;
+  /** How the already-collected money was received: Cash, Online and the
+   * split text. Display only — derived from the same payment rows that
+   * mergeIntoBill carries onto the bill, so preview and save agree. */
+  received: ModeBreakdown;
 };
 
 type Source =
@@ -134,8 +143,48 @@ export function mergeMath(
     alreadyOnTab,
     outstanding,
     tabDelta: round2(outstanding - alreadyOnTab),
+    received: modeBreakdown([]),
   };
 }
+
+type CarrySource = {
+  id: string;
+  mode: string | null;
+  date: string;
+  collected: number;
+};
+
+/**
+ * The payment entries a merged bill inherits from its sources (real rows with
+ * their own modes/dates, or one implied entry for a source with no rows).
+ * ONE function shared by the dialog preview and mergeIntoBill.
+ */
+export function carriedPaymentEntries(
+  bookings: CarrySource[],
+  sales: CarrySource[],
+  sourceRows: Parameters<typeof effectivePaymentEntries>[1],
+): EffectivePaymentEntry[] {
+  return effectivePaymentEntries(
+    {
+      turf_booking: bookings.map((b) => ({
+        id: b.id,
+        collected: b.collected,
+        mode: b.mode,
+        date: b.date,
+      })),
+      snack_sale: sales.map((x) => ({
+        id: x.id,
+        collected: x.collected,
+        mode: x.mode,
+        date: x.date,
+      })),
+    },
+    sourceRows,
+  );
+}
+
+const modeParts = (entries: EffectivePaymentEntry[], parent: string) =>
+  modeBreakdown(entries.filter((e) => e.parent_id === parent)).modes;
 
 /**
  * A merged bill's tax, computed exactly the way a normal bill's is: on the
@@ -158,11 +207,26 @@ export function previewMerge(args: {
   total: number;
   /** Tax settings; defaults to the ones in effect right now. */
   settings?: Parameters<typeof taxBreakdown>[1];
-  bookings: { id: string; advance_paid: number }[];
-  sales: { id: string; total: number; payment_mode: string }[];
+  bookings: {
+    id: string;
+    advance_paid: number;
+    payment_mode?: string | null;
+    booking_date?: string;
+  }[];
+  sales: {
+    id: string;
+    total: number;
+    payment_mode: string;
+    sale_date?: string | undefined;
+    tax_amount?: number | undefined;
+    tax_lines?: SnackSaleRow["tax_lines"] | undefined;
+  }[];
   tabEntries: TabEntryRow[];
+  /** Payment rows on file (usePayments). Optional: without them the
+   * received split falls back to each source's own mode, like the save. */
+  payments?: Parameters<typeof effectivePaymentEntries>[1];
 }): MergePreview {
-  return mergeMath(
+  const base = mergeMath(
     mergeTax(args.total, args.settings ?? readAppSettings()).gross,
     [
       ...args.bookings.map((b) => {
@@ -174,11 +238,40 @@ export function previewMerge(args: {
         return { collected: bookingCollected(b, onTab), onTab };
       }),
       ...args.sales.map((s) => ({
-        collected: saleCollected(s),
+        collected: saleCollected(s as never),
         onTab: netTabAmountFor(args.tabEntries, TAB_REF_SNACK_SALE, s.id),
       })),
     ],
   );
+  // Same carried-over entries mergeIntoBill writes, so the split shown before
+  // merging is exactly the split the saved bill will have.
+  const collectedOf = (id: string, kind: "b" | "s") => {
+    if (kind === "b") {
+      const b = args.bookings.find((x) => x.id === id)!;
+      return bookingCollected(
+        b,
+        netTabAmountFor(args.tabEntries, TAB_REF_TURF_BOOKING, id),
+      );
+    }
+    const s = args.sales.find((x) => x.id === id)!;
+    return saleCollected(s as never);
+  };
+  const entries = carriedPaymentEntries(
+    args.bookings.map((b) => ({
+      id: b.id,
+      mode: b.payment_mode ?? null,
+      date: b.booking_date ?? "",
+      collected: collectedOf(b.id, "b"),
+    })),
+    args.sales.map((s) => ({
+      id: s.id,
+      mode: s.payment_mode,
+      date: s.sale_date ?? "",
+      collected: collectedOf(s.id, "s"),
+    })),
+    args.payments ?? [],
+  );
+  return { ...base, received: modeBreakdown(entries) };
 }
 
 type MergeableBooking = {
@@ -357,6 +450,38 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
       const tax = mergeTax(input.total);
       const math = mergeMath(tax.gross, sources);
       const billId = newId();
+      // How the sources' money was received (Cash / UPI / Card per source).
+      // Computed up here so the display-only breakdown below can remember it.
+      const collectedBy = new Map(sources.map((x) => [x.id, x.collected]));
+      const bookingIdSet = new Set(bookings.map((b) => b.id));
+      const saleIdSet = new Set(sales.map((x) => x.id));
+      const sourceRows = await db.payments
+        .filter(
+          (r) =>
+            (r.parent_type === "turf_booking" &&
+              bookingIdSet.has(r.parent_id)) ||
+            (r.parent_type === "snack_sale" && saleIdSet.has(r.parent_id)),
+        )
+        .toArray();
+      const carried = carriedPaymentEntries(
+        bookings.map((b) => ({
+          id: b.id,
+          collected: collectedBy.get(b.id) ?? 0,
+          mode: b.payment_mode,
+          date: b.booking_date,
+        })),
+        sales.map((x) => ({
+          id: x.id,
+          collected: collectedBy.get(x.id) ?? 0,
+          mode: x.payment_mode,
+          date: x.sale_date,
+        })),
+        sourceRows,
+      );
+      const turfModes = modeBreakdown(
+        carried.filter((e) => bookingIdSet.has(e.parent_id)),
+      ).modes;
+
       const status: BillStatus =
         math.collected >= math.total && math.total > 0
           ? "paid"
@@ -380,6 +505,7 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
                   .filter((x) => x.kind === TAB_REF_TURF_BOOKING)
                   .reduce((n, x) => n + x.collected, 0),
               ),
+              ...(turfModes.length > 0 ? { turf_modes: turfModes } : {}),
               snacks: sales.map((x) => ({
                 bill_no: x.bill_no,
                 items: x.items.length,
@@ -390,6 +516,9 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
                   ),
                 ),
                 paid: round2(saleCollected(x)),
+                ...(modeParts(carried, x.id).length > 0
+                  ? { modes: modeParts(carried, x.id) }
+                  : {}),
               })),
             }
           : null;
@@ -422,34 +551,6 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
       // they are excluded from reports while merged, so nothing is counted
       // twice). Without this the bill would show the whole amount as one
       // lump received today.
-      const collectedBy = new Map(sources.map((x) => [x.id, x.collected]));
-      const bookingIdSet = new Set(bookings.map((b) => b.id));
-      const saleIdSet = new Set(sales.map((x) => x.id));
-      const sourceRows = await db.payments
-        .filter(
-          (r) =>
-            (r.parent_type === "turf_booking" &&
-              bookingIdSet.has(r.parent_id)) ||
-            (r.parent_type === "snack_sale" && saleIdSet.has(r.parent_id)),
-        )
-        .toArray();
-      const carried = effectivePaymentEntries(
-        {
-          turf_booking: bookings.map((b) => ({
-            id: b.id,
-            collected: collectedBy.get(b.id) ?? 0,
-            mode: b.payment_mode,
-            date: b.booking_date,
-          })),
-          snack_sale: sales.map((x) => ({
-            id: x.id,
-            collected: collectedBy.get(x.id) ?? 0,
-            mode: x.payment_mode,
-            date: x.sale_date,
-          })),
-        },
-        sourceRows,
-      );
       if (carried.length > 0) {
         await db.payments.bulkAdd(
           carried.map((e) => ({

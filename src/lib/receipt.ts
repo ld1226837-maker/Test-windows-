@@ -37,7 +37,16 @@ import {
 } from "./print";
 import { printPdfBytesAsImages } from "./print-raster";
 import { buildPremiumReceiptPdf } from "./receipt-premium";
-import { receiptAdvanceAmount, receiptModeLabel } from "./payments";
+import {
+  receiptAdvanceAmount,
+  receiptModeLabel,
+  receiptPaymentRows,
+} from "./payments";
+import {
+  modeBreakdown,
+  modeBreakdownOf,
+  modeLines,
+} from "./payment-breakdown";
 import { mergedBillBreakdown } from "./merge-breakdown";
 import { readAppSettings } from "./settings";
 
@@ -1236,6 +1245,17 @@ export function billReceipt(bill: Bill): ReceiptDoc {
     grandTotal,
     itemCount: bill.items.length,
   });
+  // How the money on a MERGED bill was received (Cash / Online / split),
+  // from the payment rows copied onto the bill at merge time. Display only.
+  // Legacy merged bills (no stored breakdown) keep printing exactly as before.
+  const received = modeBreakdown(receiptPaymentRows("bill", bill.id));
+  const showReceived = Boolean(merged) && received.total > 0;
+  const turfPaid = modeBreakdownOf(bill.merged_breakdown?.turf_modes);
+  const modeValue = showReceived
+    ? received.split
+      ? `Split (${received.modes.map((m) => m.mode).join(" + ")})`
+      : (received.modes[0]?.mode ?? "")
+    : bill.payment_mode;
   // Narrow thermal rolls get the abbreviated unit ("2.5 L" instead of
   // "2.5 litre") in the QTY column so the value never has to be clipped with
   // an ellipsis to fit. Sheets (A4/A5/Letter) have plenty of column width and
@@ -1270,7 +1290,13 @@ export function billReceipt(bill: Bill): ReceiptDoc {
             ? [{ label: "Offer / Discount", amount: -bill.discount }]
             : []),
           ...(merged.advancePaid > 0
-            ? [{ label: "Advance paid", amount: -merged.advancePaid }]
+            ? [
+                {
+                  label: "Advance paid",
+                  ...(turfPaid.detail ? { sub: turfPaid.detail } : {}),
+                  amount: -merged.advancePaid,
+                },
+              ]
             : []),
           ...(merged.snacksPaid > 0
             ? [{ label: "Snacks paid", amount: -merged.snacksPaid }]
@@ -1324,9 +1350,26 @@ export function billReceipt(bill: Bill): ReceiptDoc {
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
       { label: "Paid", value: pmoney(paid) },
       ...(due > 0 ? [{ label: "Balance due", value: pmoney(due) }] : []),
-      ...(bill.payment_mode
-        ? [{ label: "Mode", value: bill.payment_mode }]
+      // Merged bill: how the collected money arrived — Cash, Online and the
+      // split — plus the turf and per-snack-bill parts.
+      ...(showReceived ? modeLines(received, pmoney) : []),
+      ...(showReceived && turfPaid.total > 0
+        ? [{ label: "Turf paid", value: turfPaid.detail }]
         : []),
+      ...(showReceived
+        ? (bill.merged_breakdown?.snacks ?? []).flatMap((sn) => {
+            const d = modeBreakdownOf(sn.modes);
+            return d.total > 0
+              ? [
+                  {
+                    label: `Snacks paid${sn.bill_no ? ` (${sn.bill_no})` : ""}`,
+                    value: d.detail,
+                  },
+                ]
+              : [];
+          })
+        : []),
+      ...(modeValue ? [{ label: "Mode", value: modeValue }] : []),
       { label: "Status", value: bill.status.toUpperCase() },
     ],
     balanceDue: due,

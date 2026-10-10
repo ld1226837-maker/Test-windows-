@@ -25,6 +25,9 @@ export type MergedSnackPart = {
   amount: number;
   /** Money already collected on that snack bill (0 when it was on tab). */
   paid: number;
+  /** Optional: how that money was received (Cash / UPI / Card amounts).
+   * Absent on bills merged before this field existed. */
+  modes?: { mode: string; amount: number }[];
 };
 
 export type MergedBreakdown = {
@@ -33,6 +36,8 @@ export type MergedBreakdown = {
   turf_items: number;
   /** Turf booking advance actually collected (never includes snack money). */
   turf_advance: number;
+  /** Optional: how the turf advance was received (Cash / UPI / Card). */
+  turf_modes?: { mode: string; amount: number }[];
   snacks: MergedSnackPart[];
 };
 

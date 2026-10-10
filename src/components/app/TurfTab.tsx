@@ -1656,9 +1656,13 @@ export function TurfTab({
                                   {breakdown.note}
                                 </p>
                               )}
-                              {breakdown.splitUsed && (
+                              {breakdown.lines.length > 0 && (
                                 <p className="text-xs text-muted-foreground">
-                                  Split pay · {breakdown.splitDetail}
+                                  {breakdown.splitUsed
+                                    ? `Split pay · ${breakdown.splitDetail}`
+                                    : `Paid via ${breakdown.splitDetail}`}{" "}
+                                  · Cash {money(breakdown.totalCash)} · Online{" "}
+                                  {money(breakdown.totalOnline)}
                                 </p>
                               )}
                               {moved && (

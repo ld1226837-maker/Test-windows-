@@ -648,6 +648,15 @@ export function setReceiptPayments(rows: PaymentRow[]) {
   receiptIndex = next;
 }
 
+/** The payment rows on file for one record (empty when none), from the same
+ * in-memory index receipts use. Display only. */
+export function receiptPaymentRows(
+  parentType: PaymentParentType,
+  parentId: string,
+): PaymentRow[] {
+  return receiptIndex.get(`${parentType}:${parentId}`) ?? [];
+}
+
 /** The "Mode" a receipt should print: the split when the record was paid in
  * several modes, otherwise the record's own mode. */
 export function receiptModeLabel(

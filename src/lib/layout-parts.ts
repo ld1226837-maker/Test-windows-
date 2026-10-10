@@ -158,6 +158,11 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
     p("bills.list.bulk", "Bulk actions bar", "row"),
     p("bills.list.heading", "Heading", "summary"),
     p("bills.list.items", "Bill rows", "list", true),
+    p(
+      "bills.list.merged-collect",
+      "Merged bill card: Collect due button",
+      "action",
+    ),
   ],
 
   /* ---------------------------- Money --------------------------- */

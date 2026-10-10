@@ -21,6 +21,7 @@ import { buildMergedItems, mergeIntoBill, previewMerge } from "@/lib/merge";
 import { usePrintSettings } from "@/lib/print";
 import { printBillPdf } from "@/lib/receipt";
 import { useSnackSales, useTurfBookings } from "@/lib/ops";
+import { usePayments } from "@/lib/data";
 import { useTabEntries } from "@/lib/tabs";
 import { CustomerFields } from "./CustomerFields";
 import { LayoutPart, LayoutParts } from "./LayoutSection";
@@ -39,6 +40,7 @@ export function MergeBillDialog() {
   const { data: bookings = [] } = useTurfBookings();
   const { data: sales = [] } = useSnackSales();
   const { data: tabEntries = [] } = useTabEntries();
+  const { data: payments = [] } = usePayments();
   const { settings: printSettings } = usePrintSettings();
   const qc = useQueryClient();
 
@@ -91,15 +93,21 @@ export function MergeBillDialog() {
         bookings: pickedBookings.map((b) => ({
           id: b.id,
           advance_paid: Number(b.advance_paid) || 0,
+          payment_mode: b.payment_mode,
+          booking_date: b.booking_date,
         })),
         sales: pickedSales.map((s) => ({
           id: s.id,
           total: Number(s.total) || 0,
           payment_mode: s.payment_mode,
+          sale_date: s.sale_date,
+          tax_amount: s.tax_amount,
+          tax_lines: s.tax_lines,
         })),
         tabEntries,
+        payments,
       }),
-    [total, pickedBookings, pickedSales, tabEntries],
+    [total, pickedBookings, pickedSales, tabEntries, payments],
   );
 
   const reset = () => {
@@ -281,7 +289,19 @@ export function MergeBillDialog() {
               {items.length > 0 && (
                 <p className="text-xs text-muted-foreground">
                   {money(preview.total)} total · {money(preview.collected)}{" "}
-                  already collected · {money(preview.outstanding)} still owed
+                  already collected
+                  {preview.received.total > 0 && (
+                    <>
+                      {" "}
+                      (Cash {money(preview.received.cash)} · Online{" "}
+                      {money(preview.received.online)}
+                      {preview.received.split
+                        ? ` · Split ${preview.received.split}`
+                        : ""}
+                      )
+                    </>
+                  )}{" "}
+                  · {money(preview.outstanding)} still owed
                   {preview.alreadyOnTab > 0 && (
                     <> · {money(preview.alreadyOnTab)} of it already on tab</>
                   )}
