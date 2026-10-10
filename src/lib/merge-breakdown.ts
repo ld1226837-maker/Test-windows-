@@ -62,7 +62,7 @@ const whole = (n: unknown) => {
  * is treated as missing rather than risk mislabelling lines.
  */
 export function mergedBillBreakdown(args: {
-  breakdown?: MergedBreakdown | null;
+  breakdown?: MergedBreakdown | null | undefined;
   /** Total paid so far (billPaidAmount). */
   paid: number;
   /** Tax-inclusive grand total (billGrossTotal). */
