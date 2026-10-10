@@ -57,7 +57,7 @@ import {
   netTabAmountFor,
 } from "@/lib/dues";
 import { Badge } from "@/components/ui/badge";
-import { useBills } from "@/lib/data";
+import { useBills, usePayments } from "@/lib/data";
 import { cn, localDateStr, errorMessage } from "@/lib/utils";
 import { useSaveCustomer } from "@/lib/data";
 import {
@@ -127,6 +127,12 @@ import {
 } from "@/lib/collect";
 import { advanceEntries } from "@/lib/split-payment";
 import { receiptModeLabel, type PaymentEntry } from "@/lib/payments";
+import {
+  bookingPaymentBreakdown,
+  groupBookingPayments,
+  turfBookingExportColumns,
+} from "@/lib/turf-payments";
+import { TurfQuickPayRow } from "./QuickPayRow";
 import { CollectPaymentDialog } from "./CollectPaymentDialog";
 import { QrCode } from "lucide-react";
 import { usePrintSettings } from "@/lib/print";
@@ -647,6 +653,11 @@ export function TurfTab({
   const balance = Math.max(0, total - rupees(form.advance_paid));
 
   const { data: tabEntries = [] } = useTabEntries();
+  const { data: payments = [] } = usePayments();
+  const paymentsByBooking = useMemo(
+    () => groupBookingPayments(payments),
+    [payments],
+  );
   const { data: allBills = [] } = useBills();
   /** invoice_no by bill id, so a merged booking can name its bill. */
   const invoiceNoById = useMemo(
@@ -1361,6 +1372,11 @@ export function TurfTab({
                         exportToExcel(
                           dateFilteredBookings.flatMap((b) => {
                             const merged = !!b.merged_into_bill_id;
+                            const extra = turfBookingExportColumns(
+                              b,
+                              paymentsByBooking.get(b.id) ?? [],
+                              tabEntries,
+                            );
                             const base = {
                               "Booking ID": b.booking_no,
                               Date: formatDMY(b.booking_date),
@@ -1418,6 +1434,28 @@ export function TurfTab({
                                       bookingGrossTotal(b) - b.advance_paid,
                                     ),
                                 Notes: b.notes ?? "",
+                                // Money columns only on the Turf row so a SUM
+                                // over the sheet never counts them twice.
+                                "Advance (first payment)":
+                                  extra["Advance (first payment)"] ?? 0,
+                                "Remaining collected":
+                                  extra["Remaining collected"] ?? 0,
+                                "Remaining collected - Cash":
+                                  extra["Remaining collected - Cash"] ?? 0,
+                                "Remaining collected - Online":
+                                  extra["Remaining collected - Online"] ?? 0,
+                                "Remaining collected on":
+                                  extra["Remaining collected on"] ?? "",
+                                "Remaining status":
+                                  extra["Remaining status"] ?? "",
+                                "Total collected - Cash":
+                                  extra["Total collected - Cash"] ?? 0,
+                                "Total collected - Online":
+                                  extra["Total collected - Online"] ?? 0,
+                                "Booking type": extra["Booking type"] ?? "",
+                                "Payment split": extra["Payment split"] ?? "",
+                                "Split detail": extra["Split detail"] ?? "",
+                                "Split pay used": extra["Split pay used"] ?? "",
                               },
                             ];
                             for (const it of b.snacks ?? []) {
@@ -1439,6 +1477,18 @@ export function TurfTab({
                                       bookingGrossTotal(b) - b.advance_paid,
                                     ),
                                 Notes: "",
+                                "Advance (first payment)": 0,
+                                "Remaining collected": 0,
+                                "Remaining collected - Cash": 0,
+                                "Remaining collected - Online": 0,
+                                "Remaining collected on": "",
+                                "Remaining status": "",
+                                "Total collected - Cash": 0,
+                                "Total collected - Online": 0,
+                                "Booking type": extra["Booking type"] ?? "",
+                                "Payment split": extra["Payment split"] ?? "",
+                                "Split detail": extra["Split detail"] ?? "",
+                                "Split pay used": extra["Split pay used"] ?? "",
                               });
                             }
                             return rows;
@@ -1505,6 +1555,13 @@ export function TurfTab({
                       };
                       const { paid, due, moved, paymentState, onDues, dueNo } =
                         rowState;
+                      // Display only: advance vs remaining, split pay, and
+                      // "Turf only" — derived from the payment rows.
+                      const breakdown = bookingPaymentBreakdown(
+                        b,
+                        paymentsByBooking.get(b.id) ?? [],
+                        tabEntries,
+                      );
                       return (
                         <div
                           key={b.id}
@@ -1538,6 +1595,9 @@ export function TurfTab({
                                       <Badge variant="outline">{state}</Badge>
                                     ) : null;
                                   })()
+                                )}
+                                {breakdown.kind === "Turf only" && (
+                                  <Badge variant="secondary">Turf only</Badge>
                                 )}
                               </div>
 
@@ -1591,6 +1651,16 @@ export function TurfTab({
                                   </span>
                                 )}
                               </p>
+                              {breakdown.note && (
+                                <p className="text-xs text-muted-foreground">
+                                  {breakdown.note}
+                                </p>
+                              )}
+                              {breakdown.splitUsed && (
+                                <p className="text-xs text-muted-foreground">
+                                  Split pay · {breakdown.splitDetail}
+                                </p>
+                              )}
                               {moved && (
                                 <p className="text-xs text-muted-foreground">
                                   This balance now sits on {b.customer_name}'s
@@ -1635,6 +1705,9 @@ export function TurfTab({
                               >
                                 {paymentStateLabel(paymentState)}
                               </Badge>
+                              {breakdown.status === "Remaining paid" && (
+                                <Badge variant="outline">Remaining paid</Badge>
+                              )}
                               {b.merged_into_bill_id && (
                                 <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                                   Merged into bill
@@ -1743,6 +1816,14 @@ export function TurfTab({
                               </div>
                             </div>
                           </div>
+                          {due > 0 &&
+                            !moved &&
+                            !b.merged_into_bill_id &&
+                            b.status !== "Cancelled" && (
+                              <div className="mt-3">
+                                <TurfQuickPayRow booking={b} />
+                              </div>
+                            )}
                         </div>
                       );
                     })}

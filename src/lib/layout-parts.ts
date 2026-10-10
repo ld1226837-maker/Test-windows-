@@ -93,6 +93,10 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
     p("turf.bookings.heading", "Heading", "summary"),
     p("turf.bookings.toolbar", "Search, sort & export", "row"),
     p("turf.bookings.list", "Bookings list", "list", true),
+    p("turf.bookings.pay-cash", "Booking card: Paid · Cash button", "action"),
+    p("turf.bookings.pay-upi", "Booking card: Paid · UPI button", "action"),
+    p("turf.bookings.pay-split", "Booking card: Split cash + online", "action"),
+    p("turf.bookings.pay-part", "Booking card: Part payment box", "action"),
   ],
 
   /* --------------------------- Snacks --------------------------- */
@@ -341,6 +345,20 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
         "summary",
       ),
       p("surface.merge-bill.actions", "Generate bill button", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.turf-pay-confirm",
+    label: "Turf quick-pay confirm pop-up",
+    parts: [
+      p(
+        "surface.turf-pay-confirm.summary",
+        "Booking, amount & mode",
+        "summary",
+        true,
+      ),
+      p("surface.turf-pay-confirm.due-after", "Due after this payment", "summary"),
+      p("surface.turf-pay-confirm.actions", "Cancel & confirm", "action", true),
     ],
   },
   {

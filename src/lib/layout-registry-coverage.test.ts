@@ -144,4 +144,30 @@ describe("layout registry covers what the tabs render", () => {
       ).toBe(true);
     });
   });
+  describe("turf quick-pay buttons and confirm pop-up are registered", () => {
+    const partIds = new Set(
+      Object.values(SECTION_PARTS).flatMap((l) => l.map((x) => x.id)),
+    );
+    it("the four booking-card buttons are parts of turf.bookings", () => {
+      for (const id of [
+        "turf.bookings.pay-cash",
+        "turf.bookings.pay-upi",
+        "turf.bookings.pay-split",
+        "turf.bookings.pay-part",
+      ]) {
+        expect(partIds.has(id)).toBe(true);
+        // wired in QuickPayRow.tsx (ids are passed to its <Slot>)
+        expect(SRC.includes(`"${id}"`)).toBe(true);
+      }
+    });
+    it("the confirm pop-up is a registered surface whose actions can't be hidden", () => {
+      const sf = SURFACE_REGISTRY.find(
+        (x) => x.surfaceId === "surface.turf-pay-confirm",
+      );
+      expect(sf).toBeDefined();
+      const part = (id: string) => sf?.parts.find((x) => x.id === id);
+      expect(part("surface.turf-pay-confirm.summary")?.locked).toBe(true);
+      expect(part("surface.turf-pay-confirm.actions")?.locked).toBe(true);
+    });
+  });
 });
