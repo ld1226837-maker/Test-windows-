@@ -599,3 +599,34 @@ logic is non-trivial:
    Confirm the total doesn't include the cancelled booking, doesn't
    double-count the merged one, and dues reflect only what's actually
    outstanding.
+
+## Turf slot booking intervals and midnight boundaries
+
+New turf bookings support only 30-minute and 60-minute intervals. The slot-duration settings and picker must not offer 15-minute or 45-minute intervals. Existing legacy records with other durations remain readable and must not be silently rewritten.
+
+### Business day: 6 AM – 6 AM
+
+The turf's day runs from 6 AM to 6 AM the next morning. **12 AM – 6 AM always belongs to the PREVIOUS date**: a 2 AM booking made for Saturday night is stored with `booking_date` = Saturday and `start_time` "2 AM". Everything that attributes a booking to a date — the slot picker, the slot guard, the calendar, dashboard, reports, revenue and utilisation — uses `booking_date` as the business date, so a night that runs past midnight never splits across two dates.
+
+- Minutes inside a business day are counted from 6 AM: 6 AM = 360, 12 AM = 1440, 2 AM = 1560, 6 AM next morning = 1800 (`businessMinutes()` in `time-slot-utils.ts`). A stored start before 6 AM is read as `1440 + start`.
+- Before 6 AM the app's "today" is still yesterday (`businessDateOf()`).
+- Picker tabs run Morning, Afternoon, Evening, Night, Late Night. Late Night (12–6 AM) is the last tab and belongs to the date being booked.
+- Intervals are half-open `[start, end)`: a booking ending at 8 PM does not occupy the slot beginning at 8 PM. `parseMinutes("12 AM")` returns 0 for display strings, so an end at or before the start means the following clock day (+1440). A booking can start from 6 AM and end no later than 6 AM next morning.
+- One-time upgrade (Dexie v20, and restore of any backup older than v20): every booking that starts between 12 AM and 5:59 AM is moved to the previous date. Rows starting at 6 AM or later are untouched.
+
+How the picker builds a booking (`src/lib/slot-selection.ts`, used by both `TurfTab` and `TimeSlotPicker`):
+
+- The first tap is the start slot; the second tap is the END boundary (exclusive). Tapping 6 PM then 8 PM books 6–8 PM (2 hr). A slot that is itself booked can still be tapped as the end, because the end is exclusive.
+- The selection is always contiguous, so `hours = slots × interval / 60` and `end_time = minuteLabel(last slot + interval)`. Tapping a selected slot makes it the new end (tapping the first slot clears).
+- The earliest start is 6 AM and the latest end is 6 AM the next morning. 12 AM is an ordinary slot (the first Late Night slot). A range that would cross a booked slot is refused and the selection is left unchanged.
+- Day parts (6–12, 12–16, 16–20, 20–24, then 24–30 = Late Night) are all whole-hour blocks, so both the 30- and 60-minute grids tile them exactly and 12 AM / 6 AM always land on the grid.
+- Editing reconstructs slots in business-day minutes (an 11 PM–1 AM booking keeps its 12–1 AM slot at 1440; a 2 AM booking sits at 1560); a legacy booking whose start or length is not on the 30/60 grid is not guessed at — the operator re-picks the time.
+
+## Merged bill: Snacks block and "Snacks paid" line (display only)
+
+No calculation changed. Grand total, Paid and Balance due still come from `billGrossTotal` / `billPaidAmount` (`lib/biz.ts`) and `lib/dues.ts`. `mergedBillBreakdown()` (`src/lib/merge-breakdown.ts`) only splits the already-computed Paid for printing:
+
+- **Advance paid** = the turf booking advance collected at merge time (never includes snack money), capped so Advance + Snacks paid never exceeds Paid.
+- **Snacks paid** = collected part of the merged snack bills, printed as a negative line; omitted when 0 (snack bill unpaid / on tab — its amount simply stays inside Balance due).
+- Print order: turf line(s), `Snacks — <item>` lines (sub-line shows the snack bill no.), Offer / Discount, Advance paid, Snacks paid.
+- `mergeIntoBill` stores `merged_breakdown` on the bill (not indexed, so no Dexie bump; travels with the bill row in backups). Bills saved before it existed have none and print exactly as before.

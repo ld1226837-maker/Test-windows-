@@ -1,4 +1,6 @@
 import Dexie, { type Table } from "dexie";
+import { moveEarlyMorningToPreviousDay } from "@/lib/business-day";
+import type { MergedBreakdown } from "./merge-breakdown";
 
 /**
  * Local-first database. Everything the app stores lives here in IndexedDB —
@@ -36,6 +38,9 @@ export type BillRow = {
   amount_paid: number;
   status: string;
   payment_mode?: string | null;
+  /** Display-only split of a merged bill (turf advance vs snacks paid). Absent
+   * on bills saved before it existed and on non-merged bills. */
+  merged_breakdown?: MergedBreakdown | null;
   /** Optional photo of the bill, relative path in receipt storage. */
   receipt_path?: string | null;
   bill_date: string;
@@ -78,13 +83,9 @@ export type TurfRateRow = {
   id: string;
   slot_name: string;
   rate_per_hour: number;
-  rate_15: number | null;
   rate_30: number | null;
-  rate_45: number | null;
   rate_60: number | null;
-  allow_15?: boolean;
   allow_30?: boolean;
-  allow_45?: boolean;
   allow_60?: boolean;
   is_active: boolean;
   created_at: string;
@@ -674,6 +675,22 @@ class LedgerDB extends Dexie {
       snack_sales:
         "id, bill_no, sale_date, customer_name, merged_into_bill_id, created_at",
     });
+
+    // v20 introduces the 6 AM–6 AM business day: a 12 AM–6 AM booking belongs
+    // to the PREVIOUS date. Existing early-morning bookings were stored under
+    // their own calendar date, so move each one back a day (one time only —
+    // restored backups older than v20 get the same fix in lib/backup.ts).
+    this.version(20)
+      .stores({})
+      .upgrade((tx) =>
+        tx
+          .table("turf_bookings")
+          .toCollection()
+          .modify((row) => {
+            const moved = moveEarlyMorningToPreviousDay(row);
+            if (moved !== row) row.booking_date = moved.booking_date;
+          }),
+      );
   }
 }
 

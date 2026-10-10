@@ -145,14 +145,8 @@ function ConfirmDeleteButton({
 function TurfRateRow({ rate }: { rate: TurfRate }) {
   const [name, setName] = useState(rate.slot_name);
   const [amount, setAmount] = useState(String(rate.rate_per_hour));
-  const [r15, setR15] = useState(
-    rate.rate_15 != null ? String(rate.rate_15) : "",
-  );
   const [r30, setR30] = useState(
     rate.rate_30 != null ? String(rate.rate_30) : "",
-  );
-  const [r45, setR45] = useState(
-    rate.rate_45 != null ? String(rate.rate_45) : "",
   );
   const [r60, setR60] = useState(
     rate.rate_60 != null ? String(rate.rate_60) : "",
@@ -164,9 +158,7 @@ function TurfRateRow({ rate }: { rate: TurfRate }) {
     ...rate,
     slot_name: name.trim(),
     rate_per_hour: Number(amount) || 0,
-    rate_15: r15 === "" ? null : Number(r15) || 0,
     rate_30: r30 === "" ? null : Number(r30) || 0,
-    rate_45: r45 === "" ? null : Number(r45) || 0,
     rate_60: r60 === "" ? null : Number(r60) || 0,
   });
 
@@ -223,12 +215,10 @@ function TurfRateRow({ rate }: { rate: TurfRate }) {
           />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2">
         {(
           [
-            ["15 min", r15, setR15, auto(1)],
             ["30 min", r30, setR30, auto(2)],
-            ["45 min", r45, setR45, auto(3)],
             ["1 hr", r60, setR60, auto(4)],
           ] as const
         ).map(([label, val, setVal, placeholder]) => (
@@ -258,9 +248,9 @@ function SlotDurationsCard() {
 
   const toggle = (key: keyof SlotDurations, v: boolean) => {
     if (!v) {
-      const others = (
-        ["allow_15", "allow_30", "allow_45", "allow_60"] as const
-      ).filter((k) => k !== key);
+      const others = (["allow_30", "allow_60"] as const).filter(
+        (k) => k !== key,
+      );
       if (!others.some((k) => durations[k])) {
         toast.error("Keep at least one slot duration on");
         return;
@@ -277,12 +267,10 @@ function SlotDurationsCard() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 p-4 pt-0">
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2">
           {(
             [
-              ["15 min", "allow_15"],
               ["30 min", "allow_30"],
-              ["45 min", "allow_45"],
               ["1 hr", "allow_60"],
             ] as const
           ).map(([label, key]) => (
