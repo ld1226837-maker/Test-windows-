@@ -34,6 +34,7 @@ import {
 import { storedTurfAmount } from "./courts";
 import { netTabAmountFor } from "./dues";
 import { rupees } from "./money";
+import type { MergedBreakdown } from "./merge-breakdown";
 import {
   db,
   newId,
@@ -363,6 +364,36 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
             ? "partial"
             : "unpaid";
 
+      // Display-only: remembers which items are turf vs which snack bill, and
+      // how much of each was already collected, so receipts can print a
+      // separate Snacks block and a "Snacks paid" line. Never read by any
+      // money calculation. Skipped (legacy printing) if the caller's items do
+      // not follow the turf-first / snack-after order buildMergedItems makes.
+      const snackItemCount = sales.reduce((n, x) => n + x.items.length, 0);
+      const merged_breakdown: MergedBreakdown | null =
+        input.items.length === bookings.length + snackItemCount
+          ? {
+              v: 1,
+              turf_items: bookings.length,
+              turf_advance: round2(
+                sources
+                  .filter((x) => x.kind === TAB_REF_TURF_BOOKING)
+                  .reduce((n, x) => n + x.collected, 0),
+              ),
+              snacks: sales.map((x) => ({
+                bill_no: x.bill_no,
+                items: x.items.length,
+                amount: round2(
+                  (x.items as { amount?: number }[]).reduce(
+                    (n, it) => n + (Number(it.amount) || 0),
+                    0,
+                  ),
+                ),
+                paid: round2(saleCollected(x)),
+              })),
+            }
+          : null;
+
       const row: BillRow = {
         id: billId,
         invoice_no: await issueInvoiceNo(),
@@ -379,6 +410,7 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
         amount_paid: math.collected,
         status: input.putOnTab && status === "paid" ? "paid" : status,
         payment_mode: input.putOnTab ? TAB_PAYMENT_MODE : null,
+        merged_breakdown,
         bill_date: nowIso(),
         created_at: nowIso(),
       };

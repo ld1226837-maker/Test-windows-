@@ -5,6 +5,7 @@ import {
   rupees,
 } from "@/lib/money";
 import { useMemo, useState } from "react";
+import { businessDateOf, businessMinutes } from "@/lib/time-slot-utils";
 import {
   Bar,
   BarChart,
@@ -310,22 +311,29 @@ export function DashboardTab() {
   // cancelled bookings are excluded; today's slots already under way (more
   // than a few minutes past their start time) are skipped too.
   const nextBookingInfo = useMemo(() => {
-    const tomorrow = dayKey(new Date(Date.now() + 86_400_000));
-    const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+    // The turf's day runs 6 AM -> 6 AM, so before 6 AM "today" is still
+    // yesterday's business date and 2 AM sorts AFTER 11 PM.
+    const bizToday = businessDateOf();
+    const tomorrow = businessDateOf(new Date(Date.now() + 86_400_000));
+    const nowMinutes = businessMinutes(
+      new Date().getHours() * 60 + new Date().getMinutes(),
+    );
     const candidates = bookings
       .filter((b) => b.status !== "Cancelled" && b.status !== "Completed")
       .map((b) => ({ b, bk: dayKey(b.booking_date) }))
-      .filter(({ bk }) => bk === today || bk === tomorrow)
+      .filter(({ bk }) => bk === bizToday || bk === tomorrow)
       .filter(({ b, bk }) => {
-        if (bk !== today) return true;
+        if (bk !== bizToday) return true;
         const start = clockMinutes(b.start_time);
-        return start === null || start >= nowMinutes - 15;
+        return start === null || businessMinutes(start) >= nowMinutes - 15;
       })
       .sort((x, y) => {
         if (x.bk !== y.bk) return x.bk < y.bk ? -1 : 1;
+        const sx = clockMinutes(x.b.start_time);
+        const sy = clockMinutes(y.b.start_time);
         return (
-          (clockMinutes(x.b.start_time) ?? 0) -
-          (clockMinutes(y.b.start_time) ?? 0)
+          (sx === null ? 0 : businessMinutes(sx)) -
+          (sy === null ? 0 : businessMinutes(sy))
         );
       });
     const next = candidates[0]?.b;
@@ -337,9 +345,9 @@ export function DashboardTab() {
     return {
       label: next.customer_name,
       sub: [next.slot_name, timeText].filter(Boolean).join(" · "),
-      whenText: candidates[0]!.bk === today ? "Today" : "Tomorrow",
+      whenText: candidates[0]!.bk === bizToday ? "Today" : "Tomorrow",
     };
-  }, [bookings, today]);
+  }, [bookings]);
 
   // "Unfinished" records: still marked Confirmed for a date that's already
   // passed without ever being marked Completed or Cancelled — i.e. a status
@@ -349,9 +357,10 @@ export function DashboardTab() {
   const staleBookingsCount = useMemo(
     () =>
       bookings.filter(
-        (b) => b.status === "Confirmed" && dayKey(b.booking_date) < today,
+        (b) =>
+          b.status === "Confirmed" && dayKey(b.booking_date) < businessDateOf(),
       ).length,
-    [bookings, today],
+    [bookings],
   );
 
   const daily = useMemo(() => {

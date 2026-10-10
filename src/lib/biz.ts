@@ -1,4 +1,5 @@
 import { waMeUrl } from "./phone";
+import type { MergedBreakdown } from "./merge-breakdown";
 import { money, rupees } from "./money";
 import { storedTurfAmount } from "@/lib/courts";
 import { readAppSettings, taxBreakdown } from "./settings";
@@ -92,6 +93,8 @@ export type Bill = {
   amount_paid: number;
   status: BillStatus;
   payment_mode?: string | null;
+  /** Display-only split of a merged bill; see lib/merge-breakdown.ts. */
+  merged_breakdown?: MergedBreakdown | null;
   bill_date: string;
 };
 

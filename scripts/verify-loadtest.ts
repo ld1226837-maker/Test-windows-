@@ -118,9 +118,7 @@ for (const b of bookings) {
     slot_name: b.slot_name ?? "verify",
     is_active: true,
     rate_per_hour: b.rate_per_hour,
-    rate_15: null,
     rate_30: null,
-    rate_45: null,
     rate_60: b.rate_per_hour,
   };
   const expectedTurf = turfPrice(

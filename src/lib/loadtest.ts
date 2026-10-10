@@ -551,9 +551,7 @@ export async function seedLoadTestData(
   await db.app_settings.put({
     key: "slot_durations",
     value: {
-      allow_15: previousValue["allow_15"] !== false,
       allow_30: previousValue["allow_30"] !== false,
-      allow_45: previousValue["allow_45"] !== false,
       allow_60: previousValue["allow_60"] !== false,
       total_courts: LOAD_TEST_COURTS,
       court_names: Array.from(
@@ -701,9 +699,7 @@ export async function seedLoadTestData(
             slot_name: slot.start,
             is_active: true,
             rate_per_hour: rate,
-            rate_15: null,
             rate_30: null,
-            rate_45: null,
             rate_60: rate,
           };
           // F5: use the production pricing path, then apply the courts multiplier
@@ -1541,13 +1537,9 @@ export async function seedLoadTestData(
         id: `${LT_ID}rate-weekdays`,
         slot_name: "Weekdays",
         rate_per_hour: 1200,
-        rate_15: null,
         rate_30: null,
-        rate_45: null,
         rate_60: 1200,
-        allow_15: false,
         allow_30: false,
-        allow_45: false,
         allow_60: true,
         is_active: true,
         created_at: isoAt(startWindowDate, 6, 20),
@@ -1556,13 +1548,9 @@ export async function seedLoadTestData(
         id: `${LT_ID}rate-weekends`,
         slot_name: "Weekends",
         rate_per_hour: 1400,
-        rate_15: null,
         rate_30: null,
-        rate_45: null,
         rate_60: 1400,
-        allow_15: false,
         allow_30: false,
-        allow_45: false,
         allow_60: true,
         is_active: true,
         created_at: isoAt(startWindowDate, 6, 21),

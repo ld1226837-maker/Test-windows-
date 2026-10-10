@@ -40,6 +40,11 @@ import {
   LayoutParts,
 } from "./LayoutSection";
 import { bookingGrossTotal, formatDMY, money } from "@/lib/biz";
+import {
+  nextSelection,
+  slotsForSpan,
+  spanFromTimes,
+} from "@/lib/slot-selection";
 import { rupees } from "@/lib/money";
 import {
   bookingRefundableAdvance,
@@ -72,6 +77,10 @@ import {
   hoursLabel,
   parseMinutes,
   DAY_PARTS,
+  PICKER_PARTS,
+  partWindow,
+  businessMinutes,
+  businessDateOf,
   type DayPartId,
 } from "@/lib/time-slot-utils";
 import { TurfCalendarCard } from "./TurfCalendarCard";
@@ -123,7 +132,8 @@ import { QrCode } from "lucide-react";
 import { usePrintSettings } from "@/lib/print";
 import { UpiPayDialog } from "./UpiPayDialog";
 
-const today = () => localDateStr();
+// The turf's day runs 6 AM -> 6 AM: before 6 AM "today" is still yesterday.
+const today = () => businessDateOf();
 
 const defaultDayPart = (): DayPartId => {
   const h = new Date().getHours();
@@ -442,7 +452,6 @@ export function TurfTab({
   const [discount, setDiscount] = useState("");
   const [notes, setNotes] = useState("");
 
-  const [repeatWeeks, setRepeatWeeks] = useState(1);
   const [collect, setCollect] = useState<Record<string, string>>({});
 
   // Slot durations + court count switched on globally in Settings → Turf rates.
@@ -483,16 +492,17 @@ export function TurfTab({
    * Slot-grid marks (in the currently selected `interval`) that overlap an
    * existing booking on `date` — including one made under a *different*
    * interval setting. A booking is stored as an exact start time + duration,
-   * so e.g. a 45-min booking starting at 6:45 must still block the 6:00–7:00
-   * and 7:00–8:00 hourly slots. Comparing raw start-minute values missed this
+   * so e.g. a legacy 6:45–7:30 booking must still block the 6:00–7:00 and
+   * 7:00–8:00 hourly slots. Comparing raw start-minute values missed this
    * whenever the grids didn't line up, letting the same time get booked twice.
    */
   const takenOn = useMemo(() => {
     return (date: string, excludeId?: string | null) => {
       const occupied = occupiedMinutesOn(date, excludeId);
       const taken: number[] = [];
-      for (const part of DAY_PARTS) {
-        for (let m = part.from * 60; m < part.to * 60; m += interval) {
+      for (const part of PICKER_PARTS) {
+        const [from, to] = partWindow(part);
+        for (let m = from; m < to; m += interval) {
           // Taken when this selection's courts don't fit the free courts.
           const overlaps =
             assignCourts(occupied, totalCourts, m, interval, courts) === null;
@@ -503,6 +513,8 @@ export function TurfTab({
     };
   }, [occupiedMinutesOn, interval, courts, totalCourts]);
 
+  // Business-day minutes (360 … 1800), so a night that runs past midnight is
+  // one continuous range and needs nothing from the next date.
   const bookedSlots = useMemo(
     () => takenOn(form.booking_date, editingId),
     [takenOn, form.booking_date, editingId],
@@ -521,8 +533,9 @@ export function TurfTab({
     return (date: string, excludeId?: string | null) => {
       const occupied = occupiedMinutesOn(date, excludeId);
       const free = new Map<number, number>();
-      for (const part of DAY_PARTS) {
-        for (let m = part.from * 60; m < part.to * 60; m += interval) {
+      for (const part of PICKER_PARTS) {
+        const [from, to] = partWindow(part);
+        for (let m = from; m < to; m += interval) {
           const minFree = freeCourtIdsFor(
             occupied,
             totalCourts,
@@ -619,7 +632,7 @@ export function TurfTab({
     courts,
     courtNames,
   ]);
-  // Full hours at the hourly rate + the leftover 15/30/45 min at its own rate.
+  // Full hours at the hourly rate + a supported 30-minute remainder.
   const turfAmount = rateRow
     ? turfPrice(priceForDuration(rateRow, bookedMinutes), courts)
     : 0;
@@ -762,21 +775,17 @@ export function TurfTab({
     return map;
   }, [pageBookings, tabEntries]);
 
-  const toggleSlot = (m: number) =>
-    setSelectedSlots((prev) => {
-      // Deselect
-      if (prev.includes(m)) return prev.filter((x) => x !== m);
-      if (prev.length === 0) return [m];
-      // Treat the second tap as the booking's end time. Fill only the slots
-      // before that endpoint so 6:30 → 7:30 remains one hour, not 90 minutes.
-      const min = Math.min(...prev, m);
-      const max = Math.max(...prev, m);
-      const next: number[] = [];
-      for (let x = min; x < max; x += interval) next.push(x);
-      // Don't allow the span to swallow an already-booked slot
-      if (next.some((x) => bookedSlots.includes(x))) return [m];
-      return next;
-    });
+  const toggleSlot = (m: number) => {
+    const next = nextSelection(selectedSlots, m, interval, bookedSlots);
+    // nextSelection returns the SAME array when a tap is refused (it would
+    // swallow a booked slot, miss the grid, or start on a booked slot).
+    if (next === selectedSlots) {
+      if (selectedSlots.length > 0)
+        toast.info("That range includes a booked time — pick a different end.");
+      return;
+    }
+    setSelectedSlots(next);
+  };
 
   /**
    * Opens an existing booking in the wizard for rescheduling instead of the
@@ -791,12 +800,7 @@ export function TurfTab({
   const startEdit = (b: (typeof bookings)[number]) => {
     const startM = parseMinutes(b.start_time);
     const endM = parseMinutes(b.end_time);
-    const span =
-      startM !== null && endM !== null
-        ? endM > startM
-          ? endM - startM
-          : endM + 1440 - startM
-        : Math.max(1, Math.round((b.hours || 1) * 60));
+    const span = spanFromTimes(startM, endM, b.hours);
 
     const sortedAllowed = [...allowedIntervals].sort((x, y) => x - y);
     const fitInterval =
@@ -823,15 +827,17 @@ export function TurfTab({
     setCourts(Math.max(1, Number(b.courts ?? 1)));
     setDiscount(b.discount ? String(b.discount) : "");
     setNotes(b.notes ?? "");
-    setRepeatWeeks(1);
     setDayPart(nextDayPart);
 
     if (fitInterval !== undefined && startM !== null) {
       setInterval(fitInterval);
-      const slots: number[] = [];
-      for (let m = startM; m < startM + span; m += fitInterval)
-        slots.push(m % 1440);
-      setSelectedSlots(slots);
+      // Business-day minutes (no `% 1440`): an 11 PM–1 AM booking keeps its
+      // 12–1 AM slot at 1440, and a 2 AM booking sits at 1560 on this date's
+      // Late Night — folding either back onto clock minutes would save it as
+      // e.g. "12 AM – 12 AM".
+      setSelectedSlots(
+        slotsForSpan(businessMinutes(startM), span, fitInterval),
+      );
     } else {
       setInterval(sortedAllowed[0] ?? 60);
       setSelectedSlots([]);
@@ -859,7 +865,6 @@ export function TurfTab({
     setSelectedSlots([]);
     setDiscount("");
     setNotes("");
-    setRepeatWeeks(1);
     setBookingStep(1);
   };
 
@@ -933,7 +938,6 @@ export function TurfTab({
       );
       return;
     }
-    const weeks = Math.max(1, Math.min(52, Math.round(repeatWeeks) || 1));
     // Whole rupee — same free-text-input concern as discountValue above.
     const advance = rupees(Number(form.advance_paid) || 0);
 
@@ -960,9 +964,7 @@ export function TurfTab({
     };
 
     if (editingId) {
-      // Rescheduling an existing booking: single record, no weekly repeat
-      // (repeatWeeks is forced back to 1 by cancelEdit/startEdit, and the
-      // Extras step hides the control while editing — see BookingWizard).
+      // Rescheduling an existing booking updates one record.
       const original = bookings.find((b) => b.id === editingId);
       const previousAdvance = rupees(Number(original?.advance_paid) || 0);
       const delta = advance - previousAdvance;
@@ -1015,72 +1017,44 @@ export function TurfTab({
       return;
     }
 
-    let savedCount = 0;
-    let skipped = 0;
     let firstSaved: Awaited<ReturnType<typeof create.mutateAsync>> | null =
       null;
-
     try {
-      for (let week = 0; week < weeks; week++) {
-        const date = addDays(form.booking_date, week * 7);
-        const dateCourts =
-          week === 0 ? firstCourts : courtsFor(date, null, null);
-        if (!dateCourts) {
-          skipped++;
-          continue;
-        }
-        const saved = await create.mutateAsync({
-          ...basePayload,
-          court_ids: dateCourts,
-          booking_date: date,
-          // Only the first date collects the advance; later weeks start unpaid.
-          advance_paid: week === 0 ? advance : 0,
+      firstSaved = await create.mutateAsync({
+        ...basePayload,
+        booking_date: form.booking_date,
+        advance_paid: advance,
+      });
+      try {
+        await recordAdvance.mutateAsync({
+          parentType: "turf_booking",
+          parentId: firstSaved.id,
+          entries: advanceEntries(
+            advance,
+            form.payment_mode,
+            form.advance_cash,
+          ),
         });
-        if (week === 0) {
-          firstSaved = saved;
-          // Record the advance as real payment rows (cash and/or online), dated
-          // the day the money arrived. The booking already carries the amount,
-          // so a failure here only falls back to the single-mode reading.
-          try {
-            await recordAdvance.mutateAsync({
-              parentType: "turf_booking",
-              parentId: saved.id,
-              entries: advanceEntries(
-                advance,
-                form.payment_mode,
-                form.advance_cash,
-              ),
-            });
-          } catch (e) {
-            // The booking carries advance_paid, so leaving it behind without
-            // its payment rows would create a false historical receipt. Roll
-            // the newly-created parent back and surface the failure instead.
-            try {
-              await del.mutateAsync(saved.id);
-            } catch (rollbackError) {
-              throw new Error(
-                `Initial payment failed and booking rollback failed: ${
-                  rollbackError instanceof Error
-                    ? rollbackError.message
-                    : String(rollbackError)
-                }`,
-              );
-            }
-            throw e;
-          }
+      } catch (e) {
+        try {
+          await del.mutateAsync(firstSaved.id);
+        } catch (rollbackError) {
+          throw new Error(
+            `Initial payment failed and booking rollback failed: ${
+              rollbackError instanceof Error
+                ? rollbackError.message
+                : String(rollbackError)
+            }`,
+          );
         }
-        savedCount++;
+        throw e;
       }
     } catch (e) {
       toast.error(errorMessage(e, "Could not save booking"));
       return;
     }
 
-    toast.success(
-      weeks > 1
-        ? `${savedCount} weekly booking${savedCount > 1 ? "s" : ""} saved${skipped ? ` · ${skipped} skipped (slot taken)` : ""}`
-        : "Booking saved",
-    );
+    toast.success("Booking saved");
     if (firstSaved && printSettings.autoPrint)
       printReceipt(
         bookingReceipt(firstSaved),
@@ -1101,7 +1075,6 @@ export function TurfTab({
     setSelectedSlots([]);
     setDiscount("");
     setNotes("");
-    setRepeatWeeks(1);
     setBookingStep(1);
   };
 
@@ -1191,20 +1164,11 @@ export function TurfTab({
                 discountValue={discountValue}
                 notes={notes}
                 onNotesChange={setNotes}
-                repeatWeeks={repeatWeeks}
-                onRepeatWeeksChange={setRepeatWeeks}
                 total={total}
                 balance={balance}
                 onSubmit={submit}
                 submitting={create.isPending || update.isPending}
               />
-              {repeatWeeks > 1 && (
-                <p className="text-[11px] text-muted-foreground">
-                  {formatDMY(form.booking_date)} →{" "}
-                  {formatDMY(addDays(form.booking_date, (repeatWeeks - 1) * 7))}{" "}
-                  · advance applies to the first date only
-                </p>
-              )}
             </CardContent>
           </Card>
         </LayoutSection>

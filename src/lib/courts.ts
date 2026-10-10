@@ -15,7 +15,7 @@
  * `totalCourts`; the count (`courts`) drives money and utilisation, the ids
  * drive occupancy and audit.
  */
-import { parseMinutes } from "@/lib/time-slot-utils";
+import { businessMinutes, parseMinutes } from "@/lib/time-slot-utils";
 import { rupees } from "@/lib/money";
 
 /** Minimal booking shape the court helpers read (avoids importing TurfBooking). */
@@ -53,6 +53,16 @@ const prevDayKey = (date: string): string | null => {
   return `${d.getFullYear()}-${mm}-${dd}`;
 };
 
+/** Next calendar date in local time, without UTC/ISO date conversion. */
+const nextDayKey = (date: string): string | null => {
+  const d = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + 1);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
 /** Minutes a booking runs, from its stored hours (never below 1). */
 export const bookingSpanMinutes = (b: { hours: number }): number =>
   Math.max(1, Math.round((Number(b.hours) || 1) * 60));
@@ -70,20 +80,24 @@ export function buildOccupancy(
 ): Map<number, number> {
   const occupied = new Map<number, number>();
   const yesterday = prevDayKey(date);
+  const tomorrow = nextDayKey(date);
   for (const b of bookings) {
     if (b.status === "Cancelled") continue;
     if (excludeId && b.id === excludeId) continue;
     const sameDay = b.booking_date === date;
     const dayBefore = yesterday !== null && b.booking_date === yesterday;
-    if (!sameDay && !dayBefore) continue;
+    const dayAfter = tomorrow !== null && b.booking_date === tomorrow;
+    if (!sameDay && !dayBefore && !dayAfter) continue;
     const start = parseMinutes(b.start_time);
     if (start === null) continue;
     const span = bookingSpanMinutes(b);
     const n = bookingCourts(b); // read per booking — no shared mutable state
     for (let m = start; m < start + span; m++) {
-      if (sameDay && m < 1440) occupied.set(m, (occupied.get(m) ?? 0) + n);
+      if (sameDay) occupied.set(m, (occupied.get(m) ?? 0) + n);
       if (dayBefore && m >= 1440)
         occupied.set(m - 1440, (occupied.get(m - 1440) ?? 0) + n);
+      if (dayAfter && m < 1440)
+        occupied.set(m + 1440, (occupied.get(m + 1440) ?? 0) + n);
     }
   }
   return occupied;
@@ -167,18 +181,22 @@ export const effectiveRatePerHour = (
     : 0;
 
 /**
- * Court-hours a booking occupies inside each [from, to) window, splitting a
- * past-midnight booking across the two calendar days. Returns
- * `{ dayOffset, from, to, courtHours }` segments the utilisation grid buckets.
+ * Court-hours a booking occupies, in BUSINESS-DAY minutes (6 AM = 360 …
+ * 12 AM = 1440 … 6 AM next morning = 1800), so a night that runs past
+ * midnight stays on one business date. Returns `{ dayOffset, from, to, n }`
+ * segments the utilisation grid buckets.
  */
 export function courtHourSegments(b: CourtBooking) {
-  const start = parseMinutes(b.start_time);
+  const clockStart = parseMinutes(b.start_time);
   let end = parseMinutes(b.end_time ?? null);
-  if (start === null || end === null) return [];
-  if (end <= start) end += 1440;
+  if (clockStart === null || end === null) return [];
+  // Business-day minutes (360 … 1800): 12–6 AM is 1440–1800 of booking_date.
+  const start = businessMinutes(clockStart);
+  while (end <= start) end += 1440;
   const n = bookingCourts(b);
-  const segs = [{ dayOffset: 0, from: start, to: Math.min(end, 1440), n }];
-  if (end > 1440) segs.push({ dayOffset: 1, from: 0, to: end - 1440, n });
+  const segs = [{ dayOffset: 0, from: start, to: Math.min(end, 1800), n }];
+  // Only legacy rows can run past 6 AM; give the rest to the next business day.
+  if (end > 1800) segs.push({ dayOffset: 1, from: 360, to: end - 1440, n });
   return segs;
 }
 
@@ -243,11 +261,13 @@ const dayNumber = (date: string): number | null => {
 };
 
 /** [startAbs, endAbs) in minutes since the epoch day 0, or null when unusable. */
-const absInterval = (b: CourtBooking): [number, number] | null => {
+export const absInterval = (b: CourtBooking): [number, number] | null => {
   const day = dayNumber(b.booking_date);
   const start = parseMinutes(b.start_time);
   if (day === null || start === null) return null;
-  const s = day * 1440 + start;
+  // Business day: a start before 6 AM is the early morning AFTER booking_date's
+  // night (2 AM on date D is D + 26 h), so it sits at 1440 + start.
+  const s = day * 1440 + businessMinutes(start);
   return [s, s + bookingSpanMinutes(b)];
 };
 
@@ -326,8 +346,10 @@ export function buildCourtOccupancy(
     const ids = held.get(b.id);
     const iv = absInterval(b);
     if (!ids || !iv) continue;
+    // Keep next-day minutes at keys 1440+ so whole-window assignment for an
+    // overnight booking sees bookings already made on the following date.
     const from = Math.max(iv[0], dayStart);
-    const to = Math.min(iv[1], dayStart + 1440);
+    const to = Math.min(iv[1], dayStart + 2880);
     for (let m = from; m < to; m++) {
       const key = m - dayStart;
       let set = occupied.get(key);

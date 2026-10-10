@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { readCache, writeCache } from "./data";
 import { bookingTaxable, freezeTax } from "./biz";
 import { rupees } from "./money";
-import { courtNamesFor, resolveCourtIds } from "./courts";
+import { absInterval, courtNamesFor, resolveCourtIds } from "./courts";
 import { removePaymentsForParents, type PaymentEntry } from "./payments";
 import { purgeReceiptIfUnreferenced } from "./receipt-storage";
 import { buildTabEntry, type AddTabEntryInput } from "./tabs";
@@ -43,18 +43,14 @@ export type TurfRate = {
   slot_name: string;
   rate_per_hour: number;
   /** Optional fixed prices per slot duration; null falls back to prorated hourly rate. */
-  rate_15: number | null;
   rate_30: number | null;
-  rate_45: number | null;
   rate_60: number | null;
   is_active: boolean;
 };
 
 /** Global on/off switches for which slot durations can be picked on new bookings. */
 export type SlotDurations = {
-  allow_15: boolean;
   allow_30: boolean;
-  allow_45: boolean;
   allow_60: boolean;
   /** How many courts/pitches the venue has. A time slot is only "booked"
    * once every court is taken, so two 1-court bookings can share a slot on a
@@ -65,9 +61,7 @@ export type SlotDurations = {
 };
 
 export const DEFAULT_SLOT_DURATIONS: SlotDurations = {
-  allow_15: true,
   allow_30: true,
-  allow_45: true,
   allow_60: true,
   total_courts: 1,
 };
@@ -82,9 +76,7 @@ export const clampCourts = (n: unknown) =>
 export const allowedIntervalsFor = (d?: SlotDurations | null): number[] => {
   const s = d ?? DEFAULT_SLOT_DURATIONS;
   const list = [
-    [15, s.allow_15],
     [30, s.allow_30],
-    [45, s.allow_45],
     [60, s.allow_60],
   ] as const;
   const on = list.filter(([, v]) => v !== false).map(([m]) => m as number);
@@ -103,9 +95,7 @@ export function useSlotDurations() {
       const row = await db.app_settings.get("slot_durations");
       const v = (row?.value ?? {}) as Partial<SlotDurations>;
       const out: SlotDurations = {
-        allow_15: v.allow_15 !== false,
         allow_30: v.allow_30 !== false,
-        allow_45: v.allow_45 !== false,
         allow_60: v.allow_60 !== false,
         total_courts: clampCourts(v.total_courts ?? 1),
         court_names: courtNamesFor(
@@ -135,14 +125,7 @@ export function useSaveSlotDurations() {
 
 /** Price for one slot of `interval` minutes. Falls back to the prorated hourly rate. */
 export const rateForInterval = (r: TurfRate, interval: number) => {
-  const custom =
-    interval === 15
-      ? r.rate_15
-      : interval === 30
-        ? r.rate_30
-        : interval === 45
-          ? r.rate_45
-          : r.rate_60;
+  const custom = interval === 30 ? r.rate_30 : r.rate_60;
   return custom != null && custom > 0
     ? custom
     : (r.rate_per_hour * interval) / 60;
@@ -150,7 +133,7 @@ export const rateForInterval = (r: TurfRate, interval: number) => {
 
 /**
  * Price for a booking of `totalMinutes`: full hours are charged at the hourly
- * rate, and the leftover 15/30/45 minutes are added on top using the slot's
+ * rate, and a leftover 30 minutes is added using the slot's
  * per-duration price (falling back to the prorated hourly rate).
  */
 export const priceForDuration = (r: TurfRate, totalMinutes: number) => {
@@ -159,17 +142,9 @@ export const priceForDuration = (r: TurfRate, totalMinutes: number) => {
     r.rate_60 != null && r.rate_60 > 0 ? r.rate_60 : r.rate_per_hour;
   const wholeHours = Math.floor(mins / 60);
   const remainder = mins % 60;
-  // The remainder uses its own 15/30/45 price when one is set; otherwise it is
-  // prorated from the SAME hourly price the full hours use (rate_60 when set),
-  // so a custom 1 hr price isn't silently ignored for the leftover minutes.
-  const remainderCustom =
-    remainder === 15
-      ? r.rate_15
-      : remainder === 30
-        ? r.rate_30
-        : remainder === 45
-          ? r.rate_45
-          : null;
+  // Only 30-minute remainders are valid for new bookings. Legacy stored
+  // durations are still priced defensively by prorating the hourly rate.
+  const remainderCustom = remainder === 30 ? r.rate_30 : null;
   const remainderPrice =
     remainder > 0
       ? remainderCustom != null && remainderCustom > 0
@@ -488,9 +463,7 @@ export async function ensureDefaultTurfRates() {
       id: r.id,
       slot_name: r.slot_name,
       rate_per_hour: Number(r.rate_per_hour),
-      rate_15: r.rate_15 != null ? Number(r.rate_15) : null,
       rate_30: r.rate_30 != null ? Number(r.rate_30) : null,
-      rate_45: r.rate_45 != null ? Number(r.rate_45) : null,
       rate_60: r.rate_60 != null ? Number(r.rate_60) : null,
       is_active: r.is_active,
     })) as TurfRate[];
@@ -516,9 +489,7 @@ export async function ensureDefaultTurfRates() {
         id: newId(),
         slot_name: r.slot_name,
         rate_per_hour: r.rate_per_hour,
-        rate_15: null,
         rate_30: null,
-        rate_45: null,
         rate_60: null,
         is_active: true,
         created_at: new Date(Date.now() + i).toISOString(),
@@ -555,9 +526,7 @@ export function useSaveTurfRate() {
       const body = {
         slot_name: payload.slot_name,
         rate_per_hour: payload.rate_per_hour ?? 0,
-        rate_15: payload.rate_15 ?? null,
         rate_30: payload.rate_30 ?? null,
-        rate_45: payload.rate_45 ?? null,
         rate_60: payload.rate_60 ?? null,
         is_active: payload.is_active ?? true,
       };
@@ -830,6 +799,41 @@ export function useTurfBookings() {
   });
 }
 
+/** Must run inside a read-write transaction on turf_bookings. */
+export async function assertTurfSlotAvailableInTransaction(
+  candidate: TurfBooking,
+  excludeId?: string,
+): Promise<void> {
+  if (candidate.status === "Cancelled") return;
+  const [rows, setting] = await Promise.all([
+    db.turf_bookings.toArray(),
+    db.app_settings.get("slot_durations"),
+  ]);
+  const totalCourts = clampCourts(
+    (setting?.value as Partial<SlotDurations> | undefined)?.total_courts ?? 1,
+  );
+  const held = resolveCourtIds(rows, totalCourts);
+  const wanted = candidate.court_ids?.length ? candidate.court_ids : [];
+  const candidateInterval = absInterval(candidate);
+  if (!candidateInterval || wanted.length === 0) return;
+  for (const existing of rows) {
+    if (existing.id === excludeId || existing.status === "Cancelled") continue;
+    const existingInterval = absInterval(existing);
+    if (
+      !existingInterval ||
+      candidateInterval[0] >= existingInterval[1] ||
+      existingInterval[0] >= candidateInterval[1]
+    )
+      continue;
+    const ids = held.get(existing.id) ?? existing.court_ids ?? [];
+    if (wanted.some((id) => ids.includes(id))) {
+      throw new Error(
+        "That court is already booked for part of this time. Choose another slot or court.",
+      );
+    }
+  }
+}
+
 export function useCreateTurfBooking() {
   const qc = useQueryClient();
   return useMutation({
@@ -850,7 +854,15 @@ export function useCreateTurfBooking() {
         booking_no,
         created_at: nowIso(),
       };
-      await db.turf_bookings.add(row);
+      await db.transaction(
+        "rw",
+        db.turf_bookings,
+        db.app_settings,
+        async () => {
+          await assertTurfSlotAvailableInTransaction(row as TurfBooking);
+          await db.turf_bookings.add(row);
+        },
+      );
       return {
         ...payload,
         tax_amount: tax.taxAmount,
@@ -885,19 +897,27 @@ export function useUpdateTurfBooking() {
         "courts",
       ];
       const changesTaxable = TAXABLE_FIELDS.some((field) => field in patch);
-      if (changesTaxable) {
-        const current = await db.turf_bookings.get(id);
-        if (!current) throw new Error("Booking not found");
-        const merged = { ...current, ...patch };
-        const tax = freezeTax(bookingTaxable(merged));
-        await db.turf_bookings.update(id, {
-          ...patch,
-          tax_amount: tax.taxAmount,
-          tax_lines: tax.taxLines,
-        });
-        return;
-      }
-      await db.turf_bookings.update(id, patch);
+      await db.transaction(
+        "rw",
+        db.turf_bookings,
+        db.app_settings,
+        async () => {
+          const current = await db.turf_bookings.get(id);
+          if (!current) throw new Error("Booking not found");
+          const merged = { ...current, ...patch } as TurfBooking;
+          await assertTurfSlotAvailableInTransaction(merged, id);
+          if (changesTaxable) {
+            const tax = freezeTax(bookingTaxable(merged));
+            await db.turf_bookings.update(id, {
+              ...patch,
+              tax_amount: tax.taxAmount,
+              tax_lines: tax.taxLines,
+            });
+          } else {
+            await db.turf_bookings.update(id, patch);
+          }
+        },
+      );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["turf_bookings"] }),
   });
