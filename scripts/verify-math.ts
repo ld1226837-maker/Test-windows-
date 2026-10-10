@@ -826,9 +826,16 @@ check(
   bookingDue(multiCourtBookings[7] as never),
   276,
 );
-// MC-8's 2 courts occupy 23:00–24:00 on day 0 and 00:00–01:00 on day 1.
+// MC-8's 2 courts run 23:00–01:00. Business days are 6 AM–6 AM, so the part
+// after midnight stays on the SAME business date: one segment (1380–1500 in
+// business-day minutes), never split across two dates.
 const mc8Segs = courtHourSegments(multiCourtBookings[7] as never);
-check("MC8 splits across midnight", mc8Segs.length, 2);
+check("MC8 stays on one business day (no midnight split)", mc8Segs.length, 1);
+check(
+  "MC8 segment is 2 hours (23:00–01:00)",
+  ((mc8Segs[0]?.to ?? 0) - (mc8Segs[0]?.from ?? 0)) / 60,
+  2,
+);
 check(
   "MC8 court-hours per day",
   mc8Segs.reduce((s, g) => s + ((g.to - g.from) / 60) * g.n, 0),
