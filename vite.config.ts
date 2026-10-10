@@ -26,6 +26,7 @@ export default defineConfig({
   vite: {
     test: {
       setupFiles: ["./src/test-setup.ts"],
+      globalSetup: ["./src/test-global-setup.ts"],
     },
   },
 });
