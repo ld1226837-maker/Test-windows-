@@ -76,7 +76,9 @@ describe("bookingReceipt() — turf booking invoices", () => {
       total_amount: 999,
     });
     const doc = bookingReceipt(b);
-    expect(doc.lines[0]!.qty).toContain("3");
+    // QTY holds the duration; the court count moves to the sub-line.
+    expect(doc.lines[0]!.sub).toContain("3");
+    expect(doc.lines[0]!.qty).not.toMatch(/crt|court/);
     expect(amountFor(getTotal(doc, "Turf"))).toBe(999);
     expect(amountFor(getTotal(doc, "GRAND TOTAL"))).toBe(999);
   });
@@ -180,6 +182,25 @@ describe("bookingReceipt() — turf booking invoices", () => {
     const doc = bookingReceipt(b);
     expect(getTotal(doc, "Mode")).toBe("UPI");
     expect(getTotal(doc, "Status")).toBe("Completed");
+  });
+
+  it("shows duration in QTY, a small Paid line, and hides payable/balance/mode from print", () => {
+    const doc = bookingReceipt(
+      makeBooking({
+        hours: 3,
+        advance_paid: 1200,
+        total_amount: 1200,
+        turf_amount: 1200,
+      }),
+    );
+    expect(doc.lines[0]!.qty).toBe("3 hr");
+    expect(doc.lines[0]!.sub).toBeUndefined();
+    const paid = doc.totals.find((t) => t.label === "Paid");
+    expect(paid?.small).toBe(true);
+    for (const label of ["Mode", "Remaining to be paid"]) {
+      const row = doc.totals.find((t) => t.label === label);
+      if (row) expect(row.printHide).toBe(true);
+    }
   });
 
   it("names the file after the booking number and customer", () => {
@@ -538,15 +559,14 @@ describe("GST toggle — off vs on", () => {
 });
 
 describe("Advance collected line (copy / WhatsApp text only)", () => {
-  it("booking text shows the advance above Paid; the printed totals are unchanged", () => {
+  it("booking text keeps only Paid after the total (advance detail stays in the Note)", () => {
     const doc = bookingReceipt(
       makeBooking({ advance_paid: 500, payment_mode: "UPI" }),
     );
-    const lines = receiptText(doc).split("\n");
-    const adv = lines.findIndex((l) => l.startsWith("Advance collected:"));
-    expect(adv).toBeGreaterThan(-1);
-    expect(lines[adv]).toMatch(/500 via UPI$/);
-    expect(adv).toBeLessThan(lines.findIndex((l) => l.startsWith("Paid:")));
+    const text = receiptText(doc);
+    const lines = text.split("\n");
+    expect(lines.some((l) => l.startsWith("Paid:"))).toBe(true);
+    expect(text).not.toMatch(/Advance collected|Mode:|Payable after advances/);
     expect(doc.totals.some((t) => /Advance collected/.test(t.label))).toBe(
       false,
     );

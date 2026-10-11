@@ -614,10 +614,11 @@ function renderBoxed(
       pdf.setFontSize(bodyFont * scale);
       for (const t of rows) {
         const isDiscount = t.value.trim().startsWith("-");
+        pdf.setFontSize(bodyFont * scale * (t.small ? 0.8 : 1));
         pdf.setTextColor(
-          isDiscount ? red[0] : 60,
-          isDiscount ? red[1] : 60,
-          isDiscount ? red[2] : 60,
+          isDiscount ? red[0] : t.small ? 110 : 60,
+          isDiscount ? red[1] : t.small ? 110 : 60,
+          isDiscount ? red[2] : t.small ? 110 : 60,
         );
         const value = shrinkToFit(t.value, Math.max(4, totalsW - 6));
         const valueW = pdf.getTextWidth(value);
@@ -1001,7 +1002,9 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
     for (const t of doc.totals) {
       const bold = t === grand;
       pdf.setFont("helvetica", bold ? "bold" : "normal");
-      pdf.setFontSize(bold ? bodyFont * 1.15 : bodyFont);
+      pdf.setFontSize(
+        bold ? bodyFont * 1.15 : t.small ? bodyFont * 0.8 : bodyFont,
+      );
       const value = fitTextToWidth(pdf, t.value, contentW * 0.48);
       const valueW = pdf.getTextWidth(value);
       pdf.text(
@@ -1014,7 +1017,8 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
         y,
       );
       pdf.text(value, width - marginX, y, { align: "right" });
-      y += (bold ? bodyFont * 1.15 : bodyFont) * 0.65;
+      y +=
+        (bold ? bodyFont * 1.15 : t.small ? bodyFont * 0.8 : bodyFont) * 0.65;
       if (bold) {
         pdf.setDrawColor(...RULE);
         pdf.line(marginX, y - 1, width - marginX, y - 1);

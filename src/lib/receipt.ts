@@ -82,7 +82,15 @@ export type ReceiptLine = {
    * place of `amount` when set. */
   amountText?: string;
 };
-export type ReceiptTotal = { label: string; value: string; strong?: boolean };
+export type ReceiptTotal = {
+  label: string;
+  value: string;
+  strong?: boolean;
+  /** Printed in a smaller, muted size (e.g. the Paid line under the total). */
+  small?: boolean;
+  /** Kept for the copy / WhatsApp text, but not printed on the bill. */
+  printHide?: boolean;
+};
 
 export type ReceiptDoc = {
   kind: string;
@@ -285,9 +293,9 @@ export function buildReceiptPdf(
       pdf.text(fitToWidth(text, width - marginX * 2), marginX, y);
       y += lineH - 0.6;
     };
-    const row = (l: string, r: string, bold = false) => {
+    const row = (l: string, r: string, bold = false, small = false) => {
       pdf.setFont("helvetica", bold ? "bold" : "normal");
-      pdf.setFontSize(bodyFont * scale);
+      pdf.setFontSize(bodyFont * scale * (small ? 0.8 : 1));
       // A long label (e.g. a custom tax name) could otherwise run straight
       // into the right-aligned value — clamp it to whatever room is actually
       // left once the value's own width is measured, same guard itemRow()
@@ -808,11 +816,12 @@ export function buildReceiptPdf(
       rule();
       // Status reads in capitals on every document type (bills store it in
       // lower case, bookings in title case), matching the premium badge.
-      for (const t of doc.totals)
+      for (const t of doc.totals.filter((x) => !x.printHide))
         row(
           t.label,
           t.label === "Status" ? t.value.toUpperCase() : t.value,
           t.strong,
+          t.small,
         );
     }
     if (doc.note) {
@@ -1647,10 +1656,15 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
     lines: [
       {
         label: `${b.slot_name} slot${timeText}`,
-        sub: courtText
-          ? `${durationText(b.hours)} · ${courtText}`
-          : durationText(b.hours),
-        qty: wide ? `${courts} court${courts > 1 ? "s" : ""}` : `${courts} crt`,
+        // Duration lives in the QTY column (e.g. "3 hr"); the sub-line only
+        // carries the court name(s), or the court count when several courts
+        // are held and the venue has no named courts.
+        ...(courtText
+          ? { sub: courtText }
+          : courts > 1
+            ? { sub: `${courts} courts` }
+            : {}),
+        qty: durationText(b.hours),
         amount: turfAmount,
       },
       ...snacks.map((it) => ({
@@ -1709,10 +1723,19 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
           ]
         : []),
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
-      ...(remainingView.payableRow ? [remainingView.payableRow] : []),
-      ...(remainingView.balanceRow ? [remainingView.balanceRow] : []),
-      { label: "Paid", value: pmoney(b.advance_paid) },
-      ...remainingView.remainingRows,
+      ...(remainingView.payableRow
+        ? [{ ...remainingView.payableRow, printHide: true }]
+        : []),
+      ...(remainingView.balanceRow
+        ? [{ ...remainingView.balanceRow, printHide: true }]
+        : []),
+      // Only a small "Paid" line stays under the total on the printed bill;
+      // payable / balance / mode rows are hidden from print (copy text keeps
+      // them) and an unsettled balance is still printed.
+      { label: "Paid", value: pmoney(b.advance_paid), small: true },
+      ...remainingView.remainingRows.map((r) =>
+        due > 0 ? r : { ...r, printHide: true },
+      ),
       // Advance and balance each get their own Mode line (never one
       // combined Cash + UPI total across both).
       ...(remainingView.balancePaid > 0
@@ -1722,6 +1745,7 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
                   {
                     label: "Advance mode",
                     value: remainingView.advanceModeText,
+                    printHide: true,
                   },
                 ]
               : []),
@@ -1730,6 +1754,7 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
                   {
                     label: "Balance mode",
                     value: remainingView.balanceModeText,
+                    printHide: true,
                   },
                 ]
               : []),
@@ -1737,6 +1762,7 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
         : [
             {
               label: "Mode",
+              printHide: true,
               value:
                 remainingView.modeLabel ??
                 receiptModeLabel("turf_booking", b.id, b.payment_mode),

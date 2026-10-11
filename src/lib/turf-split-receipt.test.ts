@@ -97,20 +97,20 @@ describe("turf booking: advance split vs balance split (TURF-20261011-0003)", ()
     expect(labels.indexOf("Paid")).toBe(labels.indexOf("Balance paid") + 1);
   });
 
-  it("the WhatsApp / copy text carries the same stages", () => {
+  it("the WhatsApp / copy text matches the bill: only Paid and the Note after the total", () => {
     setReceiptPayments([...advanceRows(), ...balanceRows()]);
     const text = receiptText(bookingReceipt(booking()));
-    expect(text).toContain(
-      "Advance collected: Rs 500 (Cash Rs 300 + UPI Rs 200)",
-    );
-    expect(text).toContain("Balance paid: Rs 3,500");
     expect(text).toContain("Paid: Rs 4,000");
-    expect(text).toContain("Advance mode: Cash Rs 300 + UPI Rs 200");
-    expect(text).toContain("Balance mode: Cash Rs 450 + UPI Rs 3,050");
-    expect(text).not.toContain("Cash Rs 750");
-    expect(text.indexOf("Advance collected")).toBeLessThan(
-      text.indexOf("Balance paid"),
-    );
+    expect(text).toContain("Advance Rs 500 via Cash Rs 300 + UPI Rs 200");
+    for (const gone of [
+      "Advance collected",
+      "Balance paid",
+      "Advance mode",
+      "Balance mode",
+      "Payable after advances",
+      "Remaining to be paid",
+    ])
+      expect(text).not.toContain(gone);
   });
 
   it("a booking paid in one go prints no Advance / Balance lines", () => {

@@ -107,10 +107,15 @@ function itemLine(
   const label = userText(l.label, o.style) || "Item";
   const qty = l.qty !== undefined && String(l.qty) !== "" ? String(l.qty) : "";
   const sub = l.sub ? userText(l.sub, o.style) : "";
+  // A plain number is a count ("Qty 2"); text such as "3 hr" is a duration
+  // and is shown as is, followed by any court name.
+  const qtyText = qty ? (/^\d+$/.test(qty) ? `Qty ${qty}` : qty) : "";
   const detail =
     sub && /^x\s/i.test(sub) && qty
       ? `${qty} ${sub}`
-      : sub || (qty ? `Qty ${qty}` : "");
+      : sub && qtyText && !/^Qty /.test(qtyText) && !sub.includes(qtyText)
+        ? `${qtyText}, ${sub}`
+        : sub || qtyText;
   const amount =
     l.amountText !== undefined
       ? ascii(l.amountText)
@@ -175,12 +180,19 @@ export function buildShareText(doc: ReceiptDoc, o: ShareOptions): string {
     (l) => isAdjustment(l) && /^snacks paid/i.test(l.label),
   );
 
-  const totals = doc.totals.map((t) => ({
-    label: ascii(t.label),
-    value:
-      t.label === "Mode" && doc.textMode ? ascii(doc.textMode) : ascii(t.value),
-    strong: Boolean(t.strong) || t.label === REMAINING_LABEL,
-  }));
+  // Rows flagged printHide are left off the printed bill, so the copy leaves
+  // them off too (Paid and the Note are what remain below the total).
+  const hasHidden = doc.totals.some((t) => t.printHide);
+  const totals = doc.totals
+    .filter((t) => !t.printHide && !(hasHidden && t.label === "Status"))
+    .map((t) => ({
+      label: ascii(t.label),
+      value:
+        t.label === "Mode" && doc.textMode
+          ? ascii(doc.textMode)
+          : ascii(t.value),
+      strong: Boolean(t.strong) || t.label === REMAINING_LABEL,
+    }));
   const grandAt = totals.findIndex((t) => /^grand total$/i.test(t.label));
   const row = (t: (typeof totals)[number], label = t.label): Row => ({
     t: t.strong ? "bold" : "line",
@@ -194,19 +206,20 @@ export function buildShareText(doc: ReceiptDoc, o: ShareOptions): string {
     for (const t of before) rows.push(row(t));
     rows.push({ t: "bold", s: `Grand total: ${grand.value}` });
     const after = totals.slice(grandAt + 1);
-    if (after.length || doc.textAdvance) {
+    const advanceText = hasHidden ? undefined : doc.textAdvance;
+    if (after.length || advanceText) {
       rows.push({ t: "blank" }, { t: "head", s: "Payment" });
       let advanceDone = false;
       let snacksDone = false;
       for (const t of after) {
         if (
           (t.label === "Paid" || t.label === BALANCE_PAID_LABEL) &&
-          doc.textAdvance &&
+          advanceText &&
           !advanceDone
         ) {
           rows.push({
             t: "line",
-            s: `Advance collected: ${ascii(doc.textAdvance)}`,
+            s: `Advance collected: ${ascii(advanceText)}`,
           });
           advanceDone = true;
         }
@@ -219,10 +232,10 @@ export function buildShareText(doc: ReceiptDoc, o: ShareOptions): string {
         }
         rows.push(row(t));
       }
-      if (!advanceDone && doc.textAdvance)
+      if (!advanceDone && advanceText)
         rows.push({
           t: "line",
-          s: `Advance collected: ${ascii(doc.textAdvance)}`,
+          s: `Advance collected: ${ascii(advanceText)}`,
         });
     }
   } else if (totals.length) {
