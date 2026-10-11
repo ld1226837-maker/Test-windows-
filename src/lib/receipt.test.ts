@@ -89,17 +89,17 @@ describe("bookingReceipt() — turf booking invoices", () => {
     });
     const doc = bookingReceipt(b);
     expect(amountFor(getTotal(doc, "Paid"))).toBe(500);
-    expect(amountFor(getTotal(doc, "Balance due"))).toBe(700);
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(700);
   });
 
-  it("drops the 'Balance due' line entirely once advance covers the total", () => {
+  it("drops the 'Remaining to be paid' line entirely once advance covers the total", () => {
     const b = makeBooking({
       total_amount: 1200,
       turf_amount: 1200,
       advance_paid: 1200,
     });
     const doc = bookingReceipt(b);
-    expect(getTotal(doc, "Balance due")).toBeUndefined();
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(0);
   });
 
   it("never lets an over-payment show a negative balance due", () => {
@@ -109,7 +109,7 @@ describe("bookingReceipt() — turf booking invoices", () => {
       advance_paid: 1500,
     });
     const doc = bookingReceipt(b);
-    expect(getTotal(doc, "Balance due")).toBeUndefined();
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(0);
   });
 
   it("itemizes Offer/Discount and Advance paid as negative line entries", () => {
@@ -155,7 +155,7 @@ describe("bookingReceipt() — turf booking invoices", () => {
     expect(amountFor(getTotal(doc, "Discount"))).toBe(-100);
     // 1200 + 150 - 100 = 1250, NOT the stale total_amount of 1200.
     expect(amountFor(getTotal(doc, "GRAND TOTAL"))).toBe(1250);
-    expect(amountFor(getTotal(doc, "Balance due"))).toBe(1250);
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(1250);
   });
 
   it("omits the Snacks total line when there are no snack items", () => {
@@ -232,7 +232,7 @@ describe("billReceipt() — merged/QuickPay bill invoices", () => {
     expect(amountFor(getTotal(doc, "Paid"))).toBe(
       amountFor(getTotal(doc, "GRAND TOTAL")),
     );
-    expect(getTotal(doc, "Balance due")).toBeUndefined();
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(0);
   });
 
   it("a 'partial' bill's Balance due is Grand Total minus what was actually paid", () => {
@@ -244,7 +244,7 @@ describe("billReceipt() — merged/QuickPay bill invoices", () => {
     });
     const doc = billReceipt(bill);
     expect(amountFor(getTotal(doc, "Paid"))).toBe(500);
-    expect(amountFor(getTotal(doc, "Balance due"))).toBe(1500);
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(1500);
   });
 
   it("itemizes Offer/Discount and Advance paid as negative line entries", () => {
@@ -335,7 +335,7 @@ describe("receiptText() — WhatsApp/copy plain-text fallback", () => {
     const text = receiptText(bookingReceipt(b));
     expect(text).toContain("GRAND TOTAL: Rs 1,200");
     expect(text).toContain("Paid: Rs 500");
-    expect(text).toContain("Balance due: Rs 700");
+    expect(text).toContain("Remaining to be paid: Rs 700");
   });
 });
 
@@ -370,7 +370,7 @@ describe("tax on Turf and Snacks receipts", () => {
     expect(cgst).toBe(sgst); // hard GST-portal rule: the halves must be equal
     expect(cgst + sgst).toBe(180);
     expect(amountFor(getTotal(doc, "GRAND TOTAL"))).toBe(1180);
-    expect(amountFor(getTotal(doc, "Balance due"))).toBe(1180);
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(1180);
   });
 
   it("booking balance due, and so the tab charge, is the tax-inclusive figure", () => {
@@ -381,7 +381,7 @@ describe("tax on Turf and Snacks receipts", () => {
       ...gst18(1000),
     });
     expect(bookingDue(b)).toBe(780); // 1180 - 400, not 600
-    expect(amountFor(getTotal(bookingReceipt(b), "Balance due"))).toBe(
+    expect(amountFor(getTotal(bookingReceipt(b), "Remaining to be paid"))).toBe(
       bookingDue(b),
     );
   });
@@ -473,7 +473,7 @@ describe("GST toggle — off vs on", () => {
     expect(getTotal(doc, "Taxable Amount")).toBeUndefined();
     expect(getTotal(doc, "CGST @9%")).toBeUndefined();
     expect(amountFor(getTotal(doc, "GRAND TOTAL"))).toBe(1000);
-    expect(amountFor(getTotal(doc, "Balance due"))).toBe(600);
+    expect(amountFor(getTotal(doc, "Remaining to be paid"))).toBe(600);
     expect(bookingDue(b)).toBe(600);
   });
 

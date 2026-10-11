@@ -86,14 +86,14 @@ type BillSortField = "date" | "customer" | "balance" | "total";
 const BILL_SORT_OPTIONS: SortOption<BillSortField>[] = [
   { value: "date", label: "Date", defaultDir: "desc" },
   { value: "customer", label: "Customer", defaultDir: "asc" },
-  { value: "balance", label: "Balance due", defaultDir: "desc" },
+  { value: "balance", label: "Remaining to be paid", defaultDir: "desc" },
   { value: "total", label: "Total", defaultDir: "desc" },
 ];
 
 type LedgerSortField = "due" | "name" | "date";
 
 const LEDGER_SORT_OPTIONS: SortOption<LedgerSortField>[] = [
-  { value: "due", label: "Balance due", defaultDir: "desc" },
+  { value: "due", label: "Remaining to be paid", defaultDir: "desc" },
   { value: "name", label: "Name (A–Z)", defaultDir: "asc" },
   { value: "date", label: "Most recent bill", defaultDir: "desc" },
 ];

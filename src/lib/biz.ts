@@ -211,7 +211,7 @@ export function billText(bill: Bill) {
     ...taxRows,
     `Payable: ${money(gross)}`,
     `Paid: ${money(paid)}`,
-    due > 0 ? `Balance due: ${money(due)}` : "",
+    bill.status === "cancelled" ? "" : `Remaining to be paid: ${money(due)}`,
     `Status: ${bill.status.toUpperCase()}`,
   ]
     .filter(Boolean)

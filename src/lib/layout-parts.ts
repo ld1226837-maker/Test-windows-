@@ -74,7 +74,7 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
     p("turf.new-booking.extras", "Discount & notes", "action"),
     p("turf.new-booking.grand-total", "Grand total (auto)", "summary", true),
     p("turf.new-booking.advance", "Advance paid"),
-    p("turf.new-booking.balance", "Balance due (auto)", "summary"),
+    p("turf.new-booking.balance", "Remaining to be paid (auto)", "summary"),
     p("turf.new-booking.payment-mode", "Payment mode"),
     p("turf.new-booking.status", "Status"),
     p("turf.new-booking.repeat", "Repeat weekly"),

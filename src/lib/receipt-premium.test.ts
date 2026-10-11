@@ -105,7 +105,7 @@ const PATHOLOGICAL_DOC: ReceiptDoc = {
   ],
   totals: [
     { label: "Paid", value: "Rs 500" },
-    { label: "Balance due", value: "Rs 1,22,986" },
+    { label: "Remaining to be paid", value: "Rs 1,22,986" },
     { label: "GRAND TOTAL", value: "Rs 1,23,486", strong: true },
     { label: "Status", value: "PARTIAL" },
   ],

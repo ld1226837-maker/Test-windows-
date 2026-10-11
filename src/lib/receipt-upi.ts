@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { REMAINING_LABEL } from "./remaining-summary";
 import QRCode from "qrcode";
 import {
   PAYMENT_BRAND_LOGOS,
@@ -568,7 +569,7 @@ export function drawUpiPanel(pdf: jsPDF, o: UpiPanelOpts): number {
     pdf.text(label, detX + w / 2, dy, { align: "center" });
   } else if (o.balanceText) {
     line(
-      "Balance due",
+      REMAINING_LABEL,
       o.balanceText,
       true,
       mono ? [20, 20, 20] : [150, 90, 10],
@@ -675,7 +676,7 @@ function drawSlim(
       pdf.setFont("helvetica", "bold");
       pdf.setTextColor(150, 90, 10);
       // Money must never be clipped: shrink to fit, same as the UPI ID.
-      const balText = `Balance due  ${o.balanceText}`;
+      const balText = `${REMAINING_LABEL}  ${o.balanceText}`;
       let balSize = smallFont;
       pdf.setFontSize(balSize);
       while (balSize > 6 && pdf.getTextWidth(balText) > o.width - 4) {

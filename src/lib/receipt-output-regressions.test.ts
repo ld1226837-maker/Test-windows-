@@ -118,10 +118,10 @@ describe("totals order and column clipping", () => {
     notes: null,
     ...over,
   });
-  it("an On-tab snack sale shows Paid 0, Balance due and UNPAID", () => {
+  it("an On-tab snack sale shows Paid 0, Remaining to be paid and UNPAID", () => {
     const d = snackSaleReceipt(sale());
     const get = (l: string) => d.totals.find((t) => t.label === l)?.value;
-    expect(get("Balance due")).toMatch(/45/);
+    expect(get("Remaining to be paid")).toMatch(/45/);
     expect(get("Status")).toBe("UNPAID");
     expect(
       snackSaleReceipt(sale({ payment_mode: "Cash" })).totals.find(
@@ -131,12 +131,12 @@ describe("totals order and column clipping", () => {
   });
   for (const paper of ["80mm", "58mm", "a4", "a5"] as const)
     for (const templateStyle of ["classic", "premium"] as const)
-      it(`${paper}/${templateStyle}: Balance due prints BELOW the grand-total row, nothing is clipped`, () => {
+      it(`${paper}/${templateStyle}: Remaining to be paid prints BELOW the grand-total row, nothing is clipped`, () => {
         const d = snackSaleReceipt(sale());
         const { calls } = render(d, { paper, templateStyle });
         const yOf = (re: RegExp) => calls.find((c) => re.test(c.text))?.y;
         const grand = yOf(/GRAND TOTAL/i);
-        const bal = yOf(/Balance due/i);
+        const bal = yOf(/Remaining to be paid/i);
         expect(grand).toBeDefined();
         expect(bal).toBeDefined();
         expect(bal!).toBeGreaterThan(grand!);
