@@ -118,6 +118,19 @@ describe("totals order and column clipping", () => {
     notes: null,
     ...over,
   });
+  for (const templateStyle of ["classic", "premium"] as const)
+    it(`${templateStyle}: a split-mode payment receipt never prints the rupee sign`, () => {
+      const d = paymentReceipt({
+        customer: "A",
+        against: "Bill INV-1",
+        amount: 1610,
+        mode: "Cash \u20b9500 + UPI \u20b91,110",
+        balanceAfter: 0,
+      });
+      const { calls } = render(d, { paper: "a4", templateStyle });
+      expect(calls.some((c) => c.text.includes("Cash Rs 500"))).toBe(true);
+      expect(calls.some((c) => c.text.includes("\u20b9"))).toBe(false);
+    });
   it("an On-tab snack sale shows Paid 0, Remaining to be paid and UNPAID", () => {
     const d = snackSaleReceipt(sale());
     const get = (l: string) => d.totals.find((t) => t.label === l)?.value;

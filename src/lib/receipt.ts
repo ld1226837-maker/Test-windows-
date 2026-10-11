@@ -44,7 +44,7 @@ import {
 } from "./payments";
 import { modeBreakdown, modeBreakdownOf, modeLines } from "./payment-breakdown";
 import { mergedBillBreakdown } from "./merge-breakdown";
-import { joinNotes, remainingSummary } from "./remaining-summary";
+import { joinNotes, pdfSafeText, remainingSummary } from "./remaining-summary";
 import { readAppSettings } from "./settings";
 
 /** PDF-safe money: helvetica has no rupee glyph, and receipts drop paise.
@@ -128,9 +128,12 @@ const DENSITY_SHADE: Record<PrintSettings["density"], number> = {
  * roll width) silently falls through to the classic renderer below, same as
  * if "classic" had been selected. */
 export function buildReceiptPdf(
-  doc: ReceiptDoc,
+  docIn: ReceiptDoc,
   s: PrintSettings = readPrintSettings(),
 ): jsPDF {
+  // Every printed text goes through the same rupee-sign swap, so no receipt
+  // type (bill, booking, payment, voucher, statement) can print "₹".
+  const doc = rupeeSafe(docIn);
   // The premium letterhead layouts are sales-invoice designs (Bill To card,
   // item table); voucher/statement documents use the classic renderer's
   // detail layout with the same logo/banner/shop header.
@@ -1227,7 +1230,45 @@ export async function shareReceipt(
 
 export { safeFilePart };
 
-export function billReceipt(bill: Bill): ReceiptDoc {
+/** Swaps the rupee sign (which the PDF fonts cannot draw) for "Rs " in every
+ * printed text of a document. Display only. */
+function rupeeSafe(doc: ReceiptDoc): ReceiptDoc {
+  return {
+    ...doc,
+    lines: doc.lines.map((l) => ({
+      ...l,
+      label: pdfSafeText(l.label),
+      ...(l.sub !== undefined ? { sub: pdfSafeText(l.sub) } : {}),
+      ...(l.amountText !== undefined
+        ? { amountText: pdfSafeText(l.amountText) }
+        : {}),
+    })),
+    totals: doc.totals.map((t) => ({
+      ...t,
+      label: pdfSafeText(t.label),
+      value: pdfSafeText(t.value),
+    })),
+    ...(doc.note ? { note: pdfSafeText(doc.note) } : {}),
+    ...(doc.details
+      ? {
+          details: doc.details.map((d) => ({
+            ...d,
+            label: pdfSafeText(d.label),
+            value: pdfSafeText(d.value),
+          })),
+        }
+      : {}),
+  };
+}
+
+export const billReceipt = (bill: Bill): ReceiptDoc =>
+  rupeeSafe(billReceiptRaw(bill));
+export const bookingReceipt = (b: TurfBooking): ReceiptDoc =>
+  rupeeSafe(bookingReceiptRaw(b));
+export const snackSaleReceipt = (s: SnackSale): ReceiptDoc =>
+  rupeeSafe(snackSaleReceiptRaw(s));
+
+function billReceiptRaw(bill: Bill): ReceiptDoc {
   // Printed from the bill's own frozen tax snapshot, never recomputed at
   // print time, so a reprint after a rate change is byte-identical to the
   // copy the customer first received.
@@ -1402,7 +1443,7 @@ const durationText = (hours: number) => {
   return `${m} min`;
 };
 
-export function bookingReceipt(b: TurfBooking): ReceiptDoc {
+function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
   const courts = b.courts ?? 1;
   const snacks = b.snacks ?? [];
   const snacksTotal = b.snacks_total ?? 0;
@@ -1529,7 +1570,7 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
   };
 }
 
-export function snackSaleReceipt(s: SnackSale): ReceiptDoc {
+function snackSaleReceiptRaw(s: SnackSale): ReceiptDoc {
   const taxLines = taxLinesWithFallback(s.total, s);
   const grandTotal = snackSaleGrossTotal(s);
   const taxAmount = grandTotal - rupees(s.total);

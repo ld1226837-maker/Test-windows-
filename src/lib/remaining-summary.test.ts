@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PAYABLE_LABEL,
+  pdfSafeText,
   REMAINING_LABEL,
   joinNotes,
   remainingSummary,
@@ -115,5 +116,14 @@ describe("remainingSummary (display only)", () => {
     );
     expect(joinNotes(null, "x")).toBe("x");
     expect(joinNotes(null, "")).toBeNull();
+  });
+});
+
+describe("pdfSafeText", () => {
+  it("replaces the rupee sign so PDF rows never overflow", () => {
+    expect(pdfSafeText("Cash \u20b9500 + UPI \u20b91,110")).toBe(
+      "Cash Rs 500 + UPI Rs 1,110",
+    );
+    expect(pdfSafeText("Rs 5")).toBe("Rs 5");
   });
 });

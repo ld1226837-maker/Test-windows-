@@ -171,3 +171,7 @@ export function joinNotes(
   const out = parts.map((p) => (p ?? "").trim()).filter(Boolean);
   return out.length ? out.join("\n") : null;
 }
+
+/** The PDF fonts cannot draw the rupee sign: it prints as wide, spaced-out
+ * glyphs that overflow the row. Receipts use "Rs " instead. */
+export const pdfSafeText = (s: string) => s.replace(/\u20b9\s*/g, "Rs ");
