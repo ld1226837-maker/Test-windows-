@@ -22,6 +22,9 @@ export type PaymentLine = {
   mode: string;
   created_at: string;
   received_at?: string | undefined;
+  /** Synthetic row for money the record shows as paid but no payment row
+   * explains; printed without a date. */
+  noDate?: boolean | undefined;
 };
 
 type Row = { label: string; value: string; strong?: boolean };
@@ -39,7 +42,9 @@ function batches(rows: PaymentLine[]): PaymentLine[][] {
   const sorted = rows
     .filter((r) => Number(r.amount) > 0)
     .slice()
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    .sort((a, b) =>
+      a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+    );
   const out: PaymentLine[][] = [];
   for (const r of sorted) {
     const last = out[out.length - 1];
@@ -52,8 +57,17 @@ function batches(rows: PaymentLine[]): PaymentLine[][] {
   return out;
 }
 
-const modesOf = (rows: PaymentLine[]) =>
-  Array.from(new Set(rows.map((r) => r.mode).filter(Boolean))).join(" + ");
+/** The app only ever receives money as Cash, UPI or Card. Anything else on a
+ * record ("Pending", "On tab", a different spelling) is shown as Cash, the
+ * app's own rule for unknown modes (see normalizeReceivedPaymentMode). */
+const canonMode = (m: unknown): string => {
+  const k = String(m ?? "")
+    .trim()
+    .toLowerCase();
+  if (k === "upi") return "UPI";
+  if (k === "card") return "Card";
+  return "Cash";
+};
 
 export type RemainingArgs = {
   /** Tax-inclusive grand total, as already printed. */
@@ -84,6 +98,8 @@ export type RemainingView = {
   remainingRows: Row[];
   /** One-line note for the receipt, or null. */
   note: string | null;
+  /** Full split text ("UPI Rs 500 + Cash Rs 900") when 2+ modes were used. */
+  modeLabel: string | null;
 };
 
 export function remainingSummary(a: RemainingArgs): RemainingView {
@@ -97,6 +113,7 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
     payableRow: null,
     remainingRows: [],
     note: null,
+    modeLabel: null,
   };
   if (a.cancelled) return empty;
 
@@ -112,7 +129,49 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
     payableRow,
     remainingRows,
     note: paymentNote(a, remaining, advances),
+    modeLabel: splitModeLabel(a),
   };
+}
+
+const sumOf = (rows: PaymentLine[]) =>
+  r2(rows.reduce((n, r) => n + Number(r.amount), 0));
+
+/** The payment rows on file, plus one undated row for any paid money they do
+ * not explain (a settlement the rows missed), in the record's own mode. */
+function completeRows(a: RemainingArgs): PaymentLine[] {
+  const rows = (a.payments ?? []).filter((r) => Number(r.amount) > 0);
+  const gap = r2(a.paid) - sumOf(rows);
+  const raw = (a.fallbackMode ?? "").trim();
+  const mode = canonMode(raw);
+  if (gap > 0.5 && !/tab/i.test(raw)) {
+    const d = rows.length === 0 ? (a.fallbackDate ?? "") : "";
+    rows.push({
+      amount: gap,
+      mode,
+      created_at: d || "~",
+      received_at: d || undefined,
+      noDate: !d,
+    });
+  }
+  return rows;
+}
+
+/** Per-mode totals in first-seen order, e.g. [["UPI", 500], ["Cash", 900]]. */
+function modeTotals(rows: PaymentLine[]): [string, number][] {
+  const m = new Map<string, number>();
+  for (const r of rows) {
+    const k = canonMode(r.mode);
+    m.set(k, (m.get(k) ?? 0) + Number(r.amount));
+  }
+  return [...m].map(([k, v]) => [k, r2(v)]);
+}
+
+function splitModeLabel(a: RemainingArgs): string | null {
+  const rows = batches(completeRows(a)).flat();
+  const t = modeTotals(rows);
+  return t.length > 1
+    ? t.map(([k, v]) => `${k} ${a.fmt(v)}`).join(" + ")
+    : null;
 }
 
 function paymentNote(
@@ -130,38 +189,49 @@ function paymentNote(
   if (a.onTab && remaining > 0)
     return `${a.fmt(remaining)} moved to the customer's tab. ${tail}`;
 
-  const groups = batches(a.payments ?? []);
-  const sum = (rows: PaymentLine[]) =>
-    r2(rows.reduce((n, r) => n + Number(r.amount), 0));
-  const when = (rows: PaymentLine[]) =>
-    date(rows[0]?.received_at || rows[0]?.created_at);
-  const part = (label: string, rows: PaymentLine[]) => {
-    const d = when(rows);
-    const m = modesOf(rows);
-    return `${label} ${a.fmt(sum(rows))}${m ? ` via ${m}` : ""}${d ? ` on ${d}` : ""}.`;
+  const groups = batches(completeRows(a));
+  // "Rs 654 via Cash Rs 644 + UPI Rs 10 on 11-10-2026" - every mode of the
+  // payment, with its amount when the payment was split.
+  const part = (rows: PaymentLine[]) => {
+    const t = modeTotals(rows);
+    const m =
+      t.length > 1
+        ? t.map(([k, v]) => `${k} ${a.fmt(v)}`).join(" + ")
+        : (t[0]?.[0] ?? "");
+    const first = rows[0];
+    const d = first?.noDate
+      ? ""
+      : date(first?.received_at || first?.created_at);
+    return `${a.fmt(sumOf(rows))}${m ? ` via ${m}` : ""}${d ? ` on ${d}` : ""}`;
   };
 
-  if (groups.length >= 2) {
-    // First batch = the advance; the newest batch = the latest payment.
-    const latest = groups[groups.length - 1];
-    if (latest) return `${part("Received", latest)} ${tail}`;
-  }
+  if (groups.length >= 2)
+    return `Received ${groups.map(part).join("; ")}. ${tail}`;
   if (groups.length === 1) {
-    const only = groups[0] as PaymentLine[];
     const label = remaining > 0 ? "Advance received" : "Received";
-    return `${part(label, only)} ${tail}`;
-  }
-
-  // No payment rows on file: older records keep working from what they have.
-  const paid = r2(a.paid);
-  if (paid > 0) {
-    const m = a.fallbackMode ? ` via ${a.fallbackMode}` : "";
-    const d = date(a.fallbackDate);
-    const label = remaining > 0 ? "Advance received" : "Received";
-    return `${label} ${a.fmt(paid)}${m}${d ? ` on ${d}` : ""}. ${tail}`;
+    return `${label} ${part(groups[0] as PaymentLine[])}. ${tail}`;
   }
   if (advances <= 0 && remaining > 0) return `No payment received yet. ${tail}`;
   return null;
+}
+
+/** Rows printed after "Paid" (Remaining, Cash/Online lines, Mode) and the
+ * "Payable after advances" row, reused by the plain-text bill so the copied /
+ * WhatsApp bill carries the same lines as the printed one. */
+export function splitReceiptTotals(
+  totals: { label: string; value: string }[],
+): {
+  payable: { label: string; value: string } | null;
+  afterPaid: { label: string; value: string }[];
+} {
+  const payable = totals.find((t) => t.label === PAYABLE_LABEL) ?? null;
+  const paidAt = totals.findIndex((t) => t.label === "Paid");
+  const statusAt = totals.findIndex((t) => t.label === "Status");
+  const end = statusAt >= 0 ? statusAt : totals.length;
+  return {
+    payable,
+    afterPaid: paidAt >= 0 ? totals.slice(paidAt + 1, end) : [],
+  };
 }
 
 /** Joins the receipt's own note (typed by the user) with the payment note. */

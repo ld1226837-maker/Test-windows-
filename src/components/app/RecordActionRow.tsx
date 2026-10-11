@@ -1,3 +1,4 @@
+import { isLongForWhatsApp } from "@/lib/share-text";
 import { Printer, Download, Share2, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -127,7 +128,12 @@ export function RecordActionRow({
             // was previously discarded, so a full failure showed nothing at
             // all. Surface it the same way the other three buttons already
             // surface theirs.
-            const url = whatsappUrl(receiptText(doc), phone);
+            const text = receiptText(doc, "whatsapp");
+            if (isLongForWhatsApp(text))
+              toast.info("Long message", {
+                description: "If WhatsApp does not open, use Copy instead.",
+              });
+            const url = whatsappUrl(text, phone);
             const opened = await openExternal(url);
             if (!opened) {
               toast.error("Couldn't open WhatsApp", {

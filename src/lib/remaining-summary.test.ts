@@ -5,6 +5,7 @@ import {
   REMAINING_LABEL,
   joinNotes,
   remainingSummary,
+  splitReceiptTotals,
 } from "./remaining-summary";
 
 const fmt = (n: number) => `Rs ${n.toLocaleString("en-IN")}`;
@@ -37,8 +38,36 @@ describe("remainingSummary (display only)", () => {
       value: "Rs 0",
     });
     expect(v.note).toBe(
-      "Received Rs 2,240 via UPI on 2026-10-10. Remaining Rs 0 - settled in full.",
+      "Received Rs 654 via Cash Rs 644 + UPI Rs 10 on 2026-10-09; Rs 2,240 via UPI on 2026-10-10. Remaining Rs 0 - settled in full.",
     );
+  });
+
+  it("shows a settlement the payment rows missed, and the full split mode", () => {
+    const v = remainingSummary({
+      grandTotal: 1400,
+      advances: 500,
+      paid: 1400,
+      fmt,
+      payments: [row("UPI", 500, "2026-10-11T09:00:00.000Z")],
+      fallbackMode: "Cash",
+      fallbackDate: "2026-10-11",
+      fmtDate: (d) => d.slice(0, 10),
+    });
+    expect(v.note).toBe(
+      "Received Rs 500 via UPI on 2026-10-11; Rs 900 via Cash. Remaining Rs 0 - settled in full.",
+    );
+    expect(v.modeLabel).toBe("UPI Rs 500 + Cash Rs 900");
+  });
+
+  it("no split label when only one mode was used", () => {
+    const v = remainingSummary({
+      grandTotal: 500,
+      advances: 0,
+      paid: 500,
+      fmt,
+      payments: [row("UPI", 500, "2026-10-11T09:00:00.000Z")],
+    });
+    expect(v.modeLabel).toBeNull();
   });
 
   it("advance only: remaining is grand total minus advance", () => {
@@ -125,5 +154,99 @@ describe("pdfSafeText", () => {
       "Cash Rs 500 + UPI Rs 1,110",
     );
     expect(pdfSafeText("Rs 5")).toBe("Rs 5");
+  });
+});
+
+describe("missing settlement and mode names", () => {
+  const fmt = (n: number) => `Rs ${n}`;
+  const fmtDate = (iso: string) =>
+    `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`;
+  const upi500 = [
+    { amount: 500, mode: "UPI", created_at: "2026-10-11T10:00:00.000Z" },
+  ];
+
+  it("shows the unrecorded Cash settlement next to the UPI advance", () => {
+    const v = remainingSummary({
+      grandTotal: 1400,
+      advances: 500,
+      paid: 1400,
+      fmt,
+      fmtDate,
+      payments: upi500,
+      fallbackMode: "Cash",
+      fallbackDate: "2026-10-11",
+    });
+    expect(v.note).toBe(
+      "Received Rs 500 via UPI on 11-10-2026; Rs 900 via Cash. Remaining Rs 0 - settled in full.",
+    );
+    expect(v.modeLabel).toBe("UPI Rs 500 + Cash Rs 900");
+  });
+
+  it("treats a Pending / unknown record mode as Cash, never prints it", () => {
+    const v = remainingSummary({
+      grandTotal: 1400,
+      advances: 500,
+      paid: 1400,
+      fmt,
+      fmtDate,
+      payments: upi500,
+      fallbackMode: "Pending",
+      fallbackDate: "2026-10-11",
+    });
+    expect(v.note).toContain("Rs 900 via Cash");
+    expect(v.note).not.toMatch(/Pending/);
+    expect(v.modeLabel).toBe("UPI Rs 500 + Cash Rs 900");
+  });
+
+  it("merges differently spelled modes into one", () => {
+    const v = remainingSummary({
+      grandTotal: 1400,
+      advances: 500,
+      paid: 1400,
+      fmt,
+      fmtDate,
+      payments: [
+        { amount: 500, mode: "Cash", created_at: "2026-10-11T10:00:00.000Z" },
+      ],
+      fallbackMode: "cash",
+      fallbackDate: "2026-10-11",
+    });
+    expect(v.modeLabel).toBeNull();
+    expect(v.note).not.toMatch(/cash/);
+  });
+
+  it("adds nothing for a bill moved to the customer's tab", () => {
+    const v = remainingSummary({
+      grandTotal: 1400,
+      advances: 500,
+      paid: 500,
+      fmt,
+      fmtDate,
+      onTab: true,
+      payments: upi500,
+      fallbackMode: "On tab",
+    });
+    expect(v.note).toBe(
+      "Rs 900 moved to the customer's tab. Remaining Rs 900.",
+    );
+    expect(v.modeLabel).toBeNull();
+  });
+});
+
+describe("splitReceiptTotals()", () => {
+  it("returns the payable row and the rows between Paid and Status", () => {
+    const r = splitReceiptTotals([
+      { label: "GRAND TOTAL", value: "Rs 1400" },
+      { label: "Payable after advances", value: "Rs 900" },
+      { label: "Paid", value: "Rs 1400" },
+      { label: "Remaining to be paid", value: "Rs 0" },
+      { label: "Mode", value: "UPI Rs 500 + Cash Rs 900" },
+      { label: "Status", value: "PAID" },
+    ]);
+    expect(r.payable?.value).toBe("Rs 900");
+    expect(r.afterPaid.map((x) => x.label)).toEqual([
+      "Remaining to be paid",
+      "Mode",
+    ]);
   });
 });

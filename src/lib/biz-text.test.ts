@@ -44,4 +44,50 @@ describe("billText()", () => {
     expect(text).not.toMatch(/Taxable amount/);
     expect(text).toContain("Payable: ₹1,000");
   });
+
+  it("adds payable-after-advances, remaining, full-split mode and the note when given", () => {
+    const text = billText(
+      {
+        ...base,
+        tax_amount: 0,
+        tax_lines: [],
+        amount_paid: 1000,
+        status: "paid",
+      },
+      {
+        payable: { label: "Payable after advances", value: "₹500" },
+        afterPaid: [
+          { label: "Remaining to be paid", value: "₹0" },
+          { label: "Mode", value: "UPI ₹500 + Cash ₹500" },
+        ],
+        note: "Received ₹500 via UPI; ₹500 via Cash. Remaining ₹0 - settled in full.",
+      },
+    );
+    const lines = text.split("\n");
+    expect(lines).toContain("Payable after advances: ₹500");
+    expect(lines).toContain("Mode: UPI ₹500 + Cash ₹500");
+    expect(lines.filter((l) => l.startsWith("Remaining to be paid"))).toEqual([
+      "Remaining to be paid: ₹0",
+    ]);
+    expect(lines.indexOf("Paid: ₹1,000")).toBeLessThan(
+      lines.indexOf("Mode: UPI ₹500 + Cash ₹500"),
+    );
+    expect(lines[lines.length - 1]).toMatch(/^Note: Received/);
+  });
+
+  it("puts Advance collected just above Paid when given", () => {
+    const lines = billText(
+      {
+        ...base,
+        tax_amount: 0,
+        tax_lines: [],
+        amount_paid: 1000,
+        status: "paid",
+      },
+      { advance: "₹500 (UPI ₹300 + Cash ₹200)", afterPaid: [] },
+    ).split("\n");
+    const i = lines.indexOf("Advance collected: ₹500 (UPI ₹300 + Cash ₹200)");
+    expect(i).toBeGreaterThan(-1);
+    expect(lines[i + 1]).toBe("Paid: ₹1,000");
+  });
 });

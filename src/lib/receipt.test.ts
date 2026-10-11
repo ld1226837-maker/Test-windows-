@@ -333,9 +333,13 @@ describe("receiptText() — WhatsApp/copy plain-text fallback", () => {
       advance_paid: 500,
     });
     const text = receiptText(bookingReceipt(b));
-    expect(text).toContain("GRAND TOTAL: Rs 1,200");
+    expect(text).toContain("Grand total: Rs 1,200");
     expect(text).toContain("Paid: Rs 500");
     expect(text).toContain("Remaining to be paid: Rs 700");
+    const wa = receiptText(bookingReceipt(b), "whatsapp");
+    expect(wa).toContain("*Grand total: Rs 1,200*");
+    expect(wa).toContain("*Remaining to be paid: Rs 700*");
+    expect(wa.replace(/\*/g, "")).toBe(text);
   });
 });
 
@@ -530,5 +534,26 @@ describe("GST toggle — off vs on", () => {
         amountFor(getTotal(bookingReceipt(legacy), "GRAND TOTAL")),
       ),
     ).toBe(1180);
+  });
+});
+
+describe("Advance collected line (copy / WhatsApp text only)", () => {
+  it("booking text shows the advance above Paid; the printed totals are unchanged", () => {
+    const doc = bookingReceipt(
+      makeBooking({ advance_paid: 500, payment_mode: "UPI" }),
+    );
+    const lines = receiptText(doc).split("\n");
+    const adv = lines.findIndex((l) => l.startsWith("Advance collected:"));
+    expect(adv).toBeGreaterThan(-1);
+    expect(lines[adv]).toMatch(/500 via UPI$/);
+    expect(adv).toBeLessThan(lines.findIndex((l) => l.startsWith("Paid:")));
+    expect(doc.totals.some((t) => /Advance collected/.test(t.label))).toBe(
+      false,
+    );
+  });
+
+  it("booking with no advance prints no Advance collected line", () => {
+    const text = receiptText(bookingReceipt(makeBooking({ advance_paid: 0 })));
+    expect(text).not.toMatch(/Advance collected/);
   });
 });

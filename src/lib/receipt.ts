@@ -46,6 +46,7 @@ import { modeBreakdown, modeBreakdownOf, modeLines } from "./payment-breakdown";
 import { mergedBillBreakdown } from "./merge-breakdown";
 import { joinNotes, pdfSafeText, remainingSummary } from "./remaining-summary";
 import { readAppSettings } from "./settings";
+import { buildShareText, type ShareStyle } from "./share-text";
 
 /** PDF-safe money: helvetica has no rupee glyph, and receipts drop paise.
  *  Handles negative amounts (used for the "Advance paid" / "Offer" line
@@ -102,6 +103,11 @@ export type ReceiptDoc = {
    * No. block AND the item table (expense and investment documents are not
    * sales invoices), and only the `strong` totals row is printed below it. */
   details?: ReceiptTotal[];
+  /** Copy / WhatsApp text only (never printed): the advance taken up front,
+   * e.g. "Rs 500 via UPI". Printed receipts already show the advance line. */
+  textAdvance?: string | undefined;
+  /** Copy / WhatsApp text only: Mode with the amounts of a split. */
+  textMode?: string | undefined;
 };
 
 /** Line-height multipliers for the "compact / normal / relaxed" line-spacing
@@ -1309,7 +1315,7 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
     ? received.split
       ? `Split (${received.modes.map((m) => m.mode).join(" + ")})`
       : (received.modes[0]?.mode ?? "")
-    : bill.payment_mode;
+    : (remainingView.modeLabel ?? bill.payment_mode);
   // Narrow thermal rolls get the abbreviated unit ("2.5 L" instead of
   // "2.5 litre") in the QTY column so the value never has to be clipped with
   // an ellipsis to fit. Sheets (A4/A5/Letter) have plenty of column width and
@@ -1428,9 +1434,65 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
       { label: "Status", value: bill.status.toUpperCase() },
     ],
     note: remainingView.note,
+    textMode: showReceived && received.split ? received.split : undefined,
+    textAdvance: merged
+      ? merged.advancePaid > 0
+        ? `${pmoney(merged.advancePaid)}${turfPaid.detail ? ` (${turfPaid.detail})` : ""}`
+        : undefined
+      : (advanceCollectedText(
+          "bill",
+          bill.id,
+          paid
+            ? Math.min(paid, receiptAdvanceAmount("bill", bill.id, paid))
+            : 0,
+          bill.payment_mode,
+        ) ?? undefined),
     balanceDue: due,
     fileName: `${safeFilePart(bill.invoice_no)}-${safeFilePart(bill.customer_name, "customer")}`,
   };
+}
+
+/** "Rs 500 via UPI" / "Rs 500 (UPI Rs 300 + Cash Rs 200)" for the money taken
+ * up front, from the first receipt on file (a split is written within a
+ * second). Null when no advance was taken. Used by the copy / WhatsApp text. */
+function advanceCollectedText(
+  parentType: "bill" | "turf_booking",
+  parentId: string,
+  amount: number,
+  fallbackMode?: string | null,
+): string | null {
+  if (!(amount > 0)) return null;
+  const canon = (m: unknown) => {
+    const k = String(m ?? "")
+      .trim()
+      .toLowerCase();
+    return k === "upi" ? "UPI" : k === "card" ? "Card" : "Cash";
+  };
+  const rows = receiptPaymentRows(parentType, parentId)
+    .filter((r) => Number(r.amount) > 0)
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const t0 = Date.parse(rows[0]?.created_at ?? "");
+  const first = rows.filter(
+    (r) =>
+      Number.isFinite(t0) && Math.abs(Date.parse(r.created_at) - t0) <= 1000,
+  );
+  const byMode = new Map<string, number>();
+  for (const r of first)
+    byMode.set(
+      canon(r.mode),
+      (byMode.get(canon(r.mode)) ?? 0) + Number(r.amount),
+    );
+  const money2 = pmoney(amount);
+  if (byMode.size > 1)
+    return `${money2} (${[...byMode].map(([m, v]) => `${m} ${pmoney(v)}`).join(" + ")})`;
+  const mode =
+    byMode.size === 1
+      ? [...byMode.keys()][0]
+      : fallbackMode
+        ? canon(fallbackMode)
+        : "";
+  return mode ? `${money2} via ${mode}` : money2;
 }
 
 /** "1 hr 30 min" from fractional hours. */
@@ -1560,11 +1622,25 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
       ...remainingView.remainingRows,
       {
         label: "Mode",
-        value: receiptModeLabel("turf_booking", b.id, b.payment_mode),
+        value:
+          remainingView.modeLabel ??
+          receiptModeLabel("turf_booking", b.id, b.payment_mode),
       },
       { label: "Status", value: b.status },
     ],
     note: joinNotes(b.notes, remainingView.note),
+    textAdvance:
+      advanceCollectedText(
+        "turf_booking",
+        b.id,
+        b.advance_paid
+          ? Math.min(
+              b.advance_paid,
+              receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
+            )
+          : 0,
+        b.payment_mode,
+      ) ?? undefined,
     balanceDue: due,
     fileName: `${safeFilePart(b.booking_no)}-${safeFilePart(b.customer_name, "customer")}`,
   };
@@ -1729,43 +1805,25 @@ export function customerStatementReceipt(p: {
   };
 }
 
-/** Plain-text version, used for WhatsApp / copy actions. */
-export function receiptText(doc: ReceiptDoc) {
+/** Plain-text bill for the Copy / WhatsApp buttons. Built from the same
+ * ReceiptDoc as the printed bill (see share-text.ts), so every line matches
+ * the PDF. */
+export function billShareText(bill: Bill, style: ShareStyle = "plain"): string {
+  return receiptText(billReceipt(bill), style);
+}
+
+/** Plain-text version, used for WhatsApp / copy actions. Pass "whatsapp" for
+ * the WhatsApp button (bold headings, markup in names neutralised) and leave
+ * the default for Copy (no markup). */
+export function receiptText(doc: ReceiptDoc, style: ShareStyle = "plain") {
   const s = readPrintSettings();
-  if (doc.details) {
-    const out: string[] = [
-      s.shopName.trim() || BUSINESS_NAME,
-      (doc.title ?? doc.kind).toUpperCase(),
-      ...doc.details.map((d) => `${d.label}: ${d.value}`),
-    ];
-    for (const t of doc.totals)
-      if (t.strong) out.push(`${t.label}: ${t.value}`);
-    if (doc.note) out.push("", `Note: ${doc.note}`);
-    return out.join("\n");
-  }
-  const lines: string[] = [
-    s.shopName.trim() || BUSINESS_NAME,
-    `${doc.kind} ${doc.docNo} · ${doc.dateText}`,
-  ];
-  if (doc.customer) lines.push(`Customer: ${doc.customer}`);
-  if (doc.phone && s.showPhone) lines.push(`Phone: ${doc.phone}`);
-  lines.push("");
-  for (const l of doc.lines) {
-    const qty = l.qty !== undefined && l.qty !== "" ? `${l.qty} × ` : "";
-    const sub = l.sub ? ` (${l.sub})` : "";
-    const amount =
-      l.amountText !== undefined
-        ? ` = ${l.amountText}`
-        : l.amount !== undefined
-          ? ` = ${pmoney(l.amount, s.currencySymbol)}`
-          : "";
-    lines.push(`${qty}${l.label}${sub}${amount}`);
-  }
-  lines.push("");
-  for (const t of doc.totals) lines.push(`${t.label}: ${t.value}`);
-  if (doc.note) lines.push("", `Note: ${doc.note}`);
-  if (s.footerLine) lines.push("", s.footerLine);
-  return lines.join("\n");
+  return buildShareText(doc, {
+    style,
+    shopName: s.shopName.trim() || BUSINESS_NAME,
+    showPhone: Boolean(s.showPhone),
+    footerLine: doc.details ? undefined : s.footerLine,
+    formatAmount: (n) => pmoney(n, s.currencySymbol),
+  });
 }
 
 /* ---------- backwards-compatible bill helpers ---------- */

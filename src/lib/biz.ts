@@ -180,7 +180,19 @@ export function historyEntryText(entry: HistoryEntry) {
   ].join("\n");
 }
 
-export function billText(bill: Bill) {
+/** Extra lines the printed bill carries that the plain-text bill adds when
+ * given (see billShareText in receipt.ts): the "Payable after advances" row,
+ * the rows after "Paid" (Remaining, Mode with the full split) and the
+ * payment note. Without it the text is exactly as before. */
+export type BillTextExtras = {
+  payable?: { label: string; value: string } | null;
+  afterPaid?: { label: string; value: string }[];
+  note?: string | null | undefined;
+  /** "Advance collected" value, e.g. "Rs 500 via UPI". */
+  advance?: string | null | undefined;
+};
+
+export function billText(bill: Bill, extras?: BillTextExtras) {
   const lines = bill.items.map(
     (r) =>
       `${r.item || "Item"} — ${r.qty} ${r.unit ?? "kg"} × ${money(r.rate)} = ${money(r.total)}`,
@@ -210,9 +222,18 @@ export function billText(bill: Bill) {
     bill.discount ? `Discount: -${money(bill.discount)}` : "",
     ...taxRows,
     `Payable: ${money(gross)}`,
+    extras?.payable ? `${extras.payable.label}: ${extras.payable.value}` : "",
+    extras?.advance ? `Advance collected: ${extras.advance}` : "",
     `Paid: ${money(paid)}`,
-    bill.status === "cancelled" ? "" : `Remaining to be paid: ${money(due)}`,
+    ...(extras?.afterPaid
+      ? extras.afterPaid.map((r) => `${r.label}: ${r.value}`)
+      : [
+          bill.status === "cancelled"
+            ? ""
+            : `Remaining to be paid: ${money(due)}`,
+        ]),
     `Status: ${bill.status.toUpperCase()}`,
+    extras?.note ? `Note: ${extras.note}` : "",
   ]
     .filter(Boolean)
     .join("\n");

@@ -221,7 +221,7 @@ describe("generated numbers, file names, text", () => {
       } as SnackSale),
     );
     expect(t).toContain("\n\n");
-    expect(t).toContain("2 × Tea");
+    expect(t).toContain("1. Tea - 2 x Rs 10 = Rs 20");
     expect(t).not.toContain("₹");
     expect(t).toContain("Rs 20");
   });
