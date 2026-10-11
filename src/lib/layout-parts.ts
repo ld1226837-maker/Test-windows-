@@ -88,6 +88,14 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
   "turf.pending-dues": [
     p("turf.pending-dues.heading", "Heading & total", "summary"),
     p("turf.pending-dues.list", "Dues list", "list", true),
+    p("turf.pending-dues.pay-cash", "Dues card: Paid · Cash button", "action"),
+    p("turf.pending-dues.pay-upi", "Dues card: Paid · UPI button", "action"),
+    p(
+      "turf.pending-dues.pay-split",
+      "Dues card: Split cash + online",
+      "action",
+    ),
+    p("turf.pending-dues.pay-part", "Dues card: Part payment box", "action"),
   ],
   "turf.bookings": [
     p("turf.bookings.heading", "Heading", "summary"),
@@ -158,11 +166,6 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
     p("bills.list.bulk", "Bulk actions bar", "row"),
     p("bills.list.heading", "Heading", "summary"),
     p("bills.list.items", "Bill rows", "list", true),
-    p(
-      "bills.list.merged-collect",
-      "Merged bill card: Collect due button",
-      "action",
-    ),
   ],
 
   /* ---------------------------- Money --------------------------- */

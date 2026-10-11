@@ -47,7 +47,17 @@ import {
 } from "@/lib/ops";
 import { useCorrectSnackSaleMode } from "@/lib/collect";
 import { advanceEntries } from "@/lib/split-payment";
-import { dueNoForRef, saleMovedToDues, saleStateLabel } from "@/lib/dues";
+import {
+  dueNoForRef,
+  saleMovedToDues,
+  saleStateLabel,
+  snackSaleCollected,
+} from "@/lib/dues";
+import {
+  buildPaymentModeLookup,
+  mergedModeColumns,
+} from "@/lib/payment-columns";
+import { readAppSettings } from "@/lib/settings";
 import { TAB_REF_SNACK_SALE, useTabEntries } from "@/lib/tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import {
@@ -69,8 +79,6 @@ import { LayoutPart, LayoutParts } from "./LayoutSection";
 import { ConfirmDeleteButton } from "./ConfirmDeleteButton";
 import { RecordActionRow } from "./RecordActionRow";
 import { SortMenu } from "./SortMenu";
-import { receiptModeLabel, receiptPaymentRows } from "@/lib/payments";
-import { modeBreakdown, modeExportColumns } from "@/lib/payment-breakdown";
 
 const PAGE_SIZE = 25;
 
@@ -182,10 +190,30 @@ export function SnackSalesList() {
     [dateFilteredSales, page],
   );
 
+  // Cash / Online / split for the Excel export, from the same payment rows
+  // the Dashboard split uses (see lib/payment-columns.ts).
+  const saleModes = useMemo(() => {
+    const settings = readAppSettings();
+    return buildPaymentModeLookup(
+      "snack_sale",
+      sales.map((s) => ({
+        id: s.id,
+        collected: snackSaleCollected(s, settings),
+        mode: s.payment_mode ?? null,
+        date: s.sale_date,
+      })),
+      payments,
+    );
+  }, [sales, payments]);
+
   const exportSales = () =>
     exportToExcel(
-      dateFilteredSales.flatMap((s) =>
-        s.items.map((it, idx) => ({
+      dateFilteredSales.flatMap((s) => {
+        const modes = saleModes(s.id);
+        // A sale merged into a bill keeps its money on the bill: numbers 0,
+        // text still says how it was paid.
+        const cols = s.merged_into_bill_id ? mergedModeColumns(modes) : modes;
+        return s.items.map((it, i) => ({
           "Bill No": s.bill_no,
           Date: formatDMY(s.sale_date),
           Customer: s.customer_name ?? "",
@@ -194,17 +222,16 @@ export function SnackSalesList() {
           "Unit Price": it.unit_price,
           Amount: it.amount,
           Profit: rupees(it.amount - it.qty * it.cost_price),
-          "Payment Mode": receiptModeLabel("snack_sale", s.id, s.payment_mode),
-          // Sale-level money, printed once (first item row) so a sheet sum
-          // never counts a split sale more than once.
-          ...(idx === 0
-            ? modeExportColumns(
-                modeBreakdown(receiptPaymentRows("snack_sale", s.id)),
-              )
-            : { "Paid - Cash": "", "Paid - Online": "", "Split detail": "" }),
+          "Payment Mode": s.payment_mode,
+          // Money columns only on a sale's first item row, so a SUM over the
+          // sheet never counts a multi-item sale's payment more than once.
+          "Paid - Cash": i === 0 ? cols["Paid - Cash"] : 0,
+          "Paid - Online": i === 0 ? cols["Paid - Online"] : 0,
+          "Payment type": cols["Payment type"],
+          "Split detail": cols["Split detail"],
           Notes: s.notes ?? "",
-        })),
-      ),
+        }));
+      }),
       `snack-sales-${sortSuffix(sort.field, sort.dir)}`,
       "Snack Sales",
       INVOICE_SECTIONS.snacks,
@@ -357,21 +384,7 @@ export function SnackSalesList() {
                             )}
                           </div>
                           <p className="text-muted-foreground">
-                            {formatDMY(s.sale_date)} ·{" "}
-                            {receiptModeLabel(
-                              "snack_sale",
-                              s.id,
-                              s.payment_mode,
-                            )}
-                            {s.payment_mode !== "On tab" &&
-                              (() => {
-                                const mb = modeBreakdown(
-                                  receiptPaymentRows("snack_sale", s.id),
-                                );
-                                return mb.total > 0
-                                  ? ` · Cash ${money(mb.cash)} · Online ${money(mb.online)}`
-                                  : "";
-                              })()}
+                            {formatDMY(s.sale_date)} · {s.payment_mode}
                             {s.booking_no ? ` · Linked to ${s.booking_no}` : ""}
                           </p>
                           <ul className="mt-1 text-muted-foreground">

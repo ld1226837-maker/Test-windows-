@@ -3,7 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Plus,
-  CheckCircle2,
   FileDown,
   ChevronLeft,
   ChevronRight,
@@ -18,7 +17,6 @@ import {
 import { exportToExcel } from "@/lib/xlsx";
 import { INVOICE_SECTIONS } from "@/lib/desktop";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog,
@@ -122,7 +120,6 @@ import {
 } from "@/lib/courts";
 import {
   useApplyBookingEditWithPayment,
-  useCollectBookingPayment,
   useRecordInitialPayments,
 } from "@/lib/collect";
 import { advanceEntries } from "@/lib/split-payment";
@@ -403,7 +400,6 @@ export function TurfTab({
   const create = useCreateTurfBooking();
   const { settings: printSettings } = usePrintSettings();
   const update = useUpdateTurfBooking();
-  const collectBooking = useCollectBookingPayment();
   const recordAdvance = useRecordInitialPayments();
   const applyBookingEditWithPayment = useApplyBookingEditWithPayment();
   const { settings } = usePrintSettings();
@@ -411,10 +407,6 @@ export function TurfTab({
   const [qrFor, setQrFor] = useState<null | { b: TurfBooking; amount: number }>(
     null,
   );
-  const [collectFor, setCollectFor] = useState<{
-    booking: TurfBooking;
-    amount: number;
-  } | null>(null);
   const [confirmMove, setConfirmMove] = useState<null | {
     name: string;
     run: () => void;
@@ -457,8 +449,6 @@ export function TurfTab({
 
   const [discount, setDiscount] = useState("");
   const [notes, setNotes] = useState("");
-
-  const [collect, setCollect] = useState<Record<string, string>>({});
 
   // Slot durations + court count switched on globally in Settings → Turf rates.
   const { data: slotDurations } = useSlotDurations();
@@ -1220,60 +1210,24 @@ export function TurfTab({
                     >
                       {visibleDues.map((b) => {
                         const due = bookingDue(b, tabEntries);
-                        // Whole rupee — same free-text-input concern as discountValue/advance above.
-                        const entered = rupees(
-                          Number(collect[b.id] ?? "") || 0,
-                        );
-                        const pay = Math.min(Math.max(entered, 0), due);
                         return (
                           <div
                             key={b.id}
                             className="frost-soft lift space-y-2 rounded-xl border p-3"
                           >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="text-sm">
-                                <p className="font-medium">
-                                  {b.customer_name} · {b.booking_no}
-                                </p>
-                                <p className="stat-value text-destructive">
-                                  Due {money(due)}
-                                </p>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={update.isPending}
-                                onClick={() =>
-                                  setCollectFor({ booking: b, amount: due })
-                                }
-                              >
-                                <CheckCircle2 className="mr-1 h-4 w-4" /> Mark
-                                paid
-                              </Button>
+                            <div className="text-sm">
+                              <p className="font-medium">
+                                {b.customer_name} · {b.booking_no}
+                              </p>
+                              <p className="stat-value text-destructive">
+                                Due {money(due)}
+                              </p>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Input
-                                inputMode="decimal"
-                                className="h-9"
-                                placeholder={`Part payment (max ${money(due)})`}
-                                value={collect[b.id] ?? ""}
-                                onChange={(e) =>
-                                  setCollect((c) => ({
-                                    ...c,
-                                    [b.id]: e.target.value,
-                                  }))
-                                }
-                              />
-                              <Button
-                                size="sm"
-                                disabled={pay <= 0 || update.isPending}
-                                onClick={() =>
-                                  setCollectFor({ booking: b, amount: pay })
-                                }
-                              >
-                                Collect
-                              </Button>
-                            </div>
+                            {/* Paid · Cash / Paid · UPI / Split / Part payment —
+                                the same one-tap controls as the booking cards
+                                and the Bills list, each ending in the registered
+                                "Confirm payment" pop-up. */}
+                            <TurfQuickPayRow booking={b} placement="dues" />
                             {/* Moves the outstanding balance onto the customer's running tab as a
                       Turf charge and clears it off the booking, so the same rupee is
                       never owed in both places. */}
@@ -1656,13 +1610,9 @@ export function TurfTab({
                                   {breakdown.note}
                                 </p>
                               )}
-                              {breakdown.lines.length > 0 && (
+                              {breakdown.splitUsed && (
                                 <p className="text-xs text-muted-foreground">
-                                  {breakdown.splitUsed
-                                    ? `Split pay · ${breakdown.splitDetail}`
-                                    : `Paid via ${breakdown.splitDetail}`}{" "}
-                                  · Cash {money(breakdown.totalCash)} · Online{" "}
-                                  {money(breakdown.totalOnline)}
+                                  Split pay · {breakdown.splitDetail}
                                 </p>
                               )}
                               {moved && (
@@ -1907,44 +1857,6 @@ export function TurfTab({
           </AlertDialogContent>
         </AlertDialog>
       )}
-      <CollectPaymentDialog
-        open={collectFor !== null}
-        onOpenChange={(o) => {
-          if (!o) setCollectFor(null);
-        }}
-        title={
-          collectFor
-            ? `Collect for ${collectFor.booking.booking_no}`
-            : undefined
-        }
-        description={collectFor?.booking.customer_name ?? undefined}
-        due={collectFor ? bookingDue(collectFor.booking, tabEntries) : 0}
-        initialAmount={collectFor?.amount}
-        defaultMode={
-          collectFor?.booking.payment_mode === "UPI" ||
-          collectFor?.booking.payment_mode === "Card"
-            ? collectFor.booking.payment_mode
-            : "Cash"
-        }
-        onConfirm={async (entries) => {
-          if (!collectFor) return;
-          const { booking } = collectFor;
-          await collectBooking.mutateAsync({
-            booking,
-            tabEntries,
-            entries,
-            markCompleted: true,
-          });
-          const total = entries.reduce((s, e) => s + e.amount, 0);
-          const left = bookingDue(booking, tabEntries) - total;
-          setCollect((c) => ({ ...c, [booking.id]: "" }));
-          toast.success(
-            left <= 0
-              ? "Marked as paid"
-              : `Collected ${money(total)} · Due ${money(left)}`,
-          );
-        }}
-      />
       <CollectPaymentDialog
         open={advanceIncrease !== null}
         onOpenChange={(o) => {

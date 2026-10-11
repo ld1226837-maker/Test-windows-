@@ -160,6 +160,17 @@ describe("layout registry covers what the tabs render", () => {
         expect(SRC.includes(`"${id}"`)).toBe(true);
       }
     });
+    it("the same four buttons are parts of turf.pending-dues", () => {
+      for (const id of [
+        "turf.pending-dues.pay-cash",
+        "turf.pending-dues.pay-upi",
+        "turf.pending-dues.pay-split",
+        "turf.pending-dues.pay-part",
+      ]) {
+        expect(partIds.has(id)).toBe(true);
+        expect(SRC.includes(`"${id}"`)).toBe(true);
+      }
+    });
     it("the confirm pop-up is a registered surface whose actions can't be hidden", () => {
       const sf = SURFACE_REGISTRY.find(
         (x) => x.surfaceId === "surface.turf-pay-confirm",

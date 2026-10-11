@@ -65,13 +65,29 @@ const TURF_PAY_PARTS = {
   part: "turf.bookings.pay-part",
 } as const;
 
+/** The same four controls inside the Turf tab's "Pending dues" list — their
+ * own Layout & arrangement parts so each list can be arranged separately. */
+const TURF_DUES_PAY_PARTS = {
+  cash: "turf.pending-dues.pay-cash",
+  upi: "turf.pending-dues.pay-upi",
+  split: "turf.pending-dues.pay-split",
+  part: "turf.pending-dues.pay-part",
+} as const;
+
 /**
  * Same Paid · Cash / Paid · UPI / Split / Part payment controls for a turf
  * booking, shown on the booking card in the Turf section. Money goes through
  * collectBookingPayment (lib/collect.ts) — real payment rows — exactly like
  * the existing "Mark paid" button, so nothing here can drift from it.
  */
-export function TurfQuickPayRow({ booking }: { booking: TurfBooking }) {
+export function TurfQuickPayRow({
+  booking,
+  placement = "card",
+}: {
+  booking: TurfBooking;
+  /** "card" = booking list card, "dues" = Pending dues list. */
+  placement?: "card" | "dues";
+}) {
   const collect = useCollectBookingPayment();
   const { data: tabEntries = [] } = useTabEntries();
   const due = bookingDue(booking, tabEntries);
@@ -81,7 +97,7 @@ export function TurfQuickPayRow({ booking }: { booking: TurfBooking }) {
       label={booking.booking_no}
       description={booking.customer_name}
       confirmSummary
-      parts={TURF_PAY_PARTS}
+      parts={placement === "dues" ? TURF_DUES_PAY_PARTS : TURF_PAY_PARTS}
       onCollect={(entries) =>
         collect.mutateAsync({
           booking,

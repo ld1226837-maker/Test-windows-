@@ -243,8 +243,27 @@ describe("cancelled / no-show bookings match analytics", () => {
     const b = booking({ advance_paid: 300, merged_into_bill_id: "bill1" });
     const rows = [pay(300, "Cash", "2026-09-01T10:00:00.000Z")];
     const cols = turfBookingExportColumns(b, rows);
+    // numbers stay 0 (its money is on the bill) — no double count...
     expect(cols["Total collected - Cash"]).toBe(0);
-    expect(cols["Payment split"]).toBe("n/a");
+    expect(cols["Total collected - Online"]).toBe(0);
+    // ...but the text still says how it was paid
+    expect(cols["Payment split"]).toBe("Cash only (paid on merged bill)");
+    expect(cols["Split detail"]).toContain("Cash");
+  });
+
+  it("a merged booking paid as a split still reports its split text", () => {
+    const b = booking({ advance_paid: 1000, merged_into_bill_id: "bill1" });
+    const rows = [
+      pay(600, "Cash", "2026-09-01T10:00:00.000Z"),
+      pay(400, "UPI", "2026-09-01T10:00:00.001Z"),
+    ];
+    const cols = turfBookingExportColumns(b, rows);
+    expect(cols["Total collected - Cash"]).toBe(0);
+    expect(cols["Total collected - Online"]).toBe(0);
+    expect(cols["Payment split"]).toBe(
+      "Split (Cash + Online) (paid on merged bill)",
+    );
+    expect(cols["Split detail"]).toContain("UPI");
   });
 });
 

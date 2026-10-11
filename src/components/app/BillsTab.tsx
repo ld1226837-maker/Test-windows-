@@ -38,25 +38,25 @@ import {
 } from "@/lib/biz";
 import {
   useBills,
+  usePayments,
   useDeleteBill,
   useUnmergeBill,
   useUpdateBill,
   useVoidBill,
 } from "@/lib/data";
 import {
+  billCollected,
   billDue,
   billMovedToDues,
-  netTabAmountFor,
   customerOutstandingIndex,
   dueNoForRef,
 } from "@/lib/dues";
 import { useSnackSales, useTurfBookings } from "@/lib/ops";
 import { TAB_REF_BILL, tabKey, useTabEntries } from "@/lib/tabs";
 import { useSettleBill } from "@/lib/collect";
-import { receiptModeLabel, receiptPaymentRows } from "@/lib/payments";
-import { modeBreakdown, modeExportColumns } from "@/lib/payment-breakdown";
-import { PaymentModeSummary } from "./PaymentModeSummary";
-import { MergedBillCollectButton } from "./MergedBillCollectButton";
+import { receiptModeLabel } from "@/lib/payments";
+import { buildPaymentModeLookup } from "@/lib/payment-columns";
+import { readAppSettings } from "@/lib/settings";
 import { dayKey } from "@/lib/analytics";
 import {
   compareBy,
@@ -106,6 +106,7 @@ export function BillsTab() {
   const unmergeBillMut = useUnmergeBill();
   const voidBillMut = useVoidBill();
   const { data: tabEntries = [] } = useTabEntries();
+  const { data: payments = [] } = usePayments();
   const { data: allBookings = [] } = useTurfBookings();
   const { data: allSales = [] } = useSnackSales();
 
@@ -259,6 +260,25 @@ export function BillsTab() {
     balanceOf(b) > 0 &&
     (Date.now() - new Date(b.bill_date).getTime()) / 86400000 > OVERDUE_DAYS;
 
+  // Cash / Online / split columns for the Excel exports — the same payment
+  // rows the Dashboard split uses. A merged bill carries its sources' real
+  // split (merge copies their payment rows onto the bill).
+  const billModes = useMemo(() => {
+    const settings = readAppSettings();
+    return buildPaymentModeLookup(
+      "bill",
+      bills
+        .filter((b) => b.status !== "cancelled")
+        .map((b) => ({
+          id: b.id,
+          collected: billCollected(b, settings),
+          mode: b.payment_mode ?? null,
+          date: b.bill_date,
+        })),
+      payments,
+    );
+  }, [bills, payments]);
+
   const billsToRows = (list: Bill[]) =>
     list.map((b) => ({
       Invoice: b.invoice_no,
@@ -269,7 +289,7 @@ export function BillsTab() {
       Paid: billPaidAmount(b),
       Balance: balanceOf(b),
       Status: b.status,
-      ...modeExportColumns(modeBreakdown(receiptPaymentRows("bill", b.id))),
+      ...billModes(b.id),
     }));
 
   const bulkMarkPaid = async () => {
@@ -472,9 +492,7 @@ export function BillsTab() {
                             Paid: billPaidAmount(b),
                             Balance: balanceOf(b),
                             Status: b.status,
-                            ...modeExportColumns(
-                              modeBreakdown(receiptPaymentRows("bill", b.id)),
-                            ),
+                            ...billModes(b.id),
                           })),
                           `bills-${sortSuffix(sort.field, sort.dir)}`,
                           "Bills",
@@ -732,13 +750,6 @@ export function BillsTab() {
                                   </span>
                                 )}
                             </p>
-                            {mergedBillIds.has(bill.id) && !cancelled && (
-                              <PaymentModeSummary
-                                breakdown={modeBreakdown(
-                                  receiptPaymentRows("bill", bill.id),
-                                )}
-                              />
-                            )}
                             {bill.payment_mode &&
                               bill.status === "paid" &&
                               !mergedBillIds.has(bill.id) && (
@@ -756,17 +767,6 @@ export function BillsTab() {
                                 This bill was cancelled — it doesn't count
                                 toward revenue or any customer's due.
                               </p>
-                            ) : moved && mergedBillIds.has(bill.id) ? (
-                              <LayoutPart id="bills.list.merged-collect">
-                                <MergedBillCollectButton
-                                  bill={bill}
-                                  due={netTabAmountFor(
-                                    tabEntries,
-                                    TAB_REF_BILL,
-                                    bill.id,
-                                  )}
-                                />
-                              </LayoutPart>
                             ) : moved ? (
                               <p className="frost-soft rounded-xl border px-3 py-2 text-xs text-muted-foreground">
                                 This bill's balance is on the customer's tab —

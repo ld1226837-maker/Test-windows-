@@ -148,6 +148,9 @@ export function bookingPaymentBreakdown(
   b: TurfBooking,
   rows: PaymentRow[],
   tabEntries: TabEntry[] = [],
+  /** Informational only: count a merged booking's own payments (normally 0,
+   * its money being on the bill) so the sheet can still say HOW it was paid. */
+  includeMerged = false,
 ): TurfPaymentBreakdown {
   const financial = isFinancialBooking(b);
   // Money that actually arrived. A cancelled / no-show booking is not
@@ -159,7 +162,9 @@ export function bookingPaymentBreakdown(
   const collected = financial
     ? bookingCashCollected(b, tabEntries)
     : b.merged_into_bill_id
-      ? 0
+      ? includeMerged
+        ? rupees(bookingCashCollected(b, tabEntries))
+        : 0
       : rupees(
           bookingForfeitedRevenue(b, tabEntries) +
             bookingRefundableAdvance(b, tabEntries),
@@ -332,6 +337,9 @@ export function turfBookingExportColumns(
 ): Record<string, string | number> {
   const bp = bookingPaymentBreakdown(b, rows, tabEntries);
   const merged = !!b.merged_into_bill_id;
+  // The numbers stay 0 for a merged booking (its money is on the bill); the
+  // text columns still say how it was paid.
+  const info = merged ? bookingPaymentBreakdown(b, rows, tabEntries, true) : bp;
   return {
     "Booking type": bp.kind,
     "Advance (first payment)": bp.advance,
@@ -344,8 +352,12 @@ export function turfBookingExportColumns(
     "Remaining status": bp.status,
     "Total collected - Cash": bp.totalCash,
     "Total collected - Online": bp.totalOnline,
-    "Payment split": merged ? "n/a" : bp.splitLabel,
-    "Split detail": bp.splitDetail,
+    "Payment split": merged
+      ? info.splitLabel === "Unpaid"
+        ? "n/a"
+        : `${info.splitLabel} (paid on merged bill)`
+      : bp.splitLabel,
+    "Split detail": info.splitDetail,
     "Split pay used": bp.splitUsed ? "Yes" : "No",
   };
 }
