@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LAYOUT_REGISTRY,
   getDefaultLayout,
+  migrateNavOrder,
   migrateSettingsOrder,
   normalizeLayout,
   sectionKind,
@@ -188,5 +189,41 @@ describe("R18 layout additions", () => {
     );
     expect(home.sections.some((s) => s.id === "home.calendar")).toBe(true);
     expect(out.density).toBe("comfortable");
+  });
+});
+
+describe("bottom navigation order", () => {
+  const order = (l: ReturnType<typeof getDefaultLayout>) =>
+    l.tabs
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((t) => t.tabId);
+
+  it("ships Invoices in the four primary slots and Outstanding first in More", () => {
+    const ids = order(getDefaultLayout());
+    expect(ids.slice(0, 5)).toEqual([
+      "home",
+      "turf",
+      "snacks",
+      "bills",
+      "dues",
+    ]);
+  });
+
+  it("re-seeds an install that still has Outstanding in the fourth slot", () => {
+    const old = getDefaultLayout();
+    const legacy = ["home", "turf", "snacks", "dues", "bills"];
+    old.tabs = old.tabs.map((t) => {
+      const i = legacy.indexOf(t.tabId);
+      return i >= 0 ? { ...t, order: i } : { ...t, order: 100 + t.order };
+    });
+    expect(order(old).slice(0, 5)).toEqual(legacy);
+    expect(order(migrateNavOrder(old)).slice(0, 5)).toEqual([
+      "home",
+      "turf",
+      "snacks",
+      "bills",
+      "dues",
+    ]);
   });
 });

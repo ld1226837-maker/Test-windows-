@@ -144,17 +144,17 @@ export const Route = createFileRoute("/")({
 });
 
 // Order matches `LAYOUT_REGISTRY` in lib/layout-prefs.ts: the four
-// highest-frequency daily tasks (Home, Bookings, Sell, Outstanding) come
-// first so they land inside the bottom nav's primary four slots by default,
-// instead of Outstanding falling into "More". Labels renamed to match:
+// highest-frequency daily tasks (Home, Bookings, Sell, Invoices) come first
+// so they land inside the bottom nav's primary four slots by default;
+// Outstanding is the first entry in "More". Labels renamed to match:
 // "Turf" → "Bookings", "Snacks" → "Sell", "Bills" → "Invoices",
 // "Money" → "Expenses". Tab ids are unchanged — only display labels moved.
 const TABS = [
   { id: "home", label: "Home", icon: LayoutDashboard },
   { id: "turf", label: "Bookings", icon: Trophy },
   { id: "snacks", label: "Sell", icon: Cookie },
-  { id: "dues", label: "Outstanding", icon: BookOpen },
   { id: "bills", label: "Invoices", icon: FileText },
+  { id: "dues", label: "Outstanding", icon: BookOpen },
   { id: "customers", label: "Customers", icon: Users },
   { id: "investments", label: "Investments", icon: PiggyBank },
   { id: "money", label: "Expenses", icon: Wallet },
