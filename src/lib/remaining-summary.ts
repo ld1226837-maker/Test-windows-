@@ -160,8 +160,7 @@ function paymentNote(
     const label = remaining > 0 ? "Advance received" : "Received";
     return `${label} ${a.fmt(paid)}${m}${d ? ` on ${d}` : ""}. ${tail}`;
   }
-  if (advances <= 0 && remaining > 0)
-    return `No payment received yet. ${tail}`;
+  if (advances <= 0 && remaining > 0) return `No payment received yet. ${tail}`;
   return null;
 }
 

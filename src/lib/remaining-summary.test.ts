@@ -56,7 +56,12 @@ describe("remainingSummary (display only)", () => {
   });
 
   it("never negative when over-paid, and advance is capped at the total", () => {
-    const v = remainingSummary({ grandTotal: 1200, advances: 1500, paid: 1500, fmt });
+    const v = remainingSummary({
+      grandTotal: 1200,
+      advances: 1500,
+      paid: 1500,
+      fmt,
+    });
     expect(v.remaining).toBe(0);
     expect(v.payable).toBe(0);
   });
@@ -78,20 +83,36 @@ describe("remainingSummary (display only)", () => {
       fallbackDate: "2026-10-01",
       fmtDate: (d) => d,
     });
-    expect(v.note).toBe("Advance received Rs 400 via Cash on 2026-10-01. Remaining Rs 600.");
+    expect(v.note).toBe(
+      "Advance received Rs 400 via Cash on 2026-10-01. Remaining Rs 600.",
+    );
   });
 
   it("on-tab balance and cancelled records", () => {
     expect(
-      remainingSummary({ grandTotal: 45, advances: 0, paid: 0, fmt, onTab: true }).note,
+      remainingSummary({
+        grandTotal: 45,
+        advances: 0,
+        paid: 0,
+        fmt,
+        onTab: true,
+      }).note,
     ).toContain("moved to the customer's tab");
-    const c = remainingSummary({ grandTotal: 45, advances: 0, paid: 0, fmt, cancelled: true });
+    const c = remainingSummary({
+      grandTotal: 45,
+      advances: 0,
+      paid: 0,
+      fmt,
+      cancelled: true,
+    });
     expect(c.remainingRows).toEqual([]);
     expect(c.note).toBeNull();
   });
 
   it("joinNotes keeps the user's note and appends the payment note", () => {
-    expect(joinNotes("Bring bibs", "Remaining Rs 0.")).toBe("Bring bibs\nRemaining Rs 0.");
+    expect(joinNotes("Bring bibs", "Remaining Rs 0.")).toBe(
+      "Bring bibs\nRemaining Rs 0.",
+    );
     expect(joinNotes(null, "x")).toBe("x");
     expect(joinNotes(null, "")).toBeNull();
   });
