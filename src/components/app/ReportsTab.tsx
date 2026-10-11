@@ -910,7 +910,7 @@ export function ReportsTab() {
             "Amount",
             "Tax",
             "Total",
-            "Advance paid",
+            "Total paid so far",
             "Balance due",
             ...TURF_EXPORT_MONEY_COLUMNS,
           ],
@@ -936,7 +936,7 @@ export function ReportsTab() {
             // Real cash taken (bookingCashCollected), not the stored
             // advance_paid — a balance moved to the customer's tab would
             // otherwise show here AND again as a dues collection.
-            "Advance paid": isFinancialBooking(b)
+            "Total paid so far": isFinancialBooking(b)
               ? bookingCashCollected(b, tabEntries)
               : 0,
             "Balance due": bookingDue(b, tabEntries),
@@ -1328,7 +1328,7 @@ export function ReportsTab() {
             "Amount",
             "Tax",
             "Total",
-            "Advance paid",
+            "Total paid so far",
             "Balance due",
             ...TURF_EXPORT_MONEY_COLUMNS,
           ],
@@ -1345,7 +1345,7 @@ export function ReportsTab() {
               ? bookingGrossTotal(b) - bookingTaxable(b)
               : 0,
             Total: isFinancialBooking(b) ? bookingGrossTotal(b) : 0,
-            "Advance paid": isFinancialBooking(b)
+            "Total paid so far": isFinancialBooking(b)
               ? bookingCashCollected(b, tabEntries)
               : 0,
             "Balance due": bookingDue(b, tabEntries),

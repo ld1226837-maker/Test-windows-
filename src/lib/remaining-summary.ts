@@ -16,6 +16,10 @@
 export const REMAINING_LABEL = "Remaining to be paid";
 /** Grand total minus advances: what was due at the counter. */
 export const PAYABLE_LABEL = "Payable after advances";
+/** Money received AFTER the advance (a later, separate collection). Printed
+ * only when an advance was taken and a later payment exists, so the advance
+ * and the balance are never mixed into one figure. */
+export const BALANCE_PAID_LABEL = "Balance paid";
 
 export type PaymentLine = {
   amount: number;
@@ -100,6 +104,12 @@ export type RemainingView = {
   note: string | null;
   /** Full split text ("UPI Rs 500 + Cash Rs 900") when 2+ modes were used. */
   modeLabel: string | null;
+  /** Row printed right before "Paid": what was collected after the advance
+   * (null unless an advance AND a later payment both exist). */
+  balanceRow: Row | null;
+  /** How the advance itself was received ("Cash Rs 300 + UPI Rs 200"), when
+   * the advance was split across 2+ modes. */
+  advanceDetail: string | null;
 };
 
 export function remainingSummary(a: RemainingArgs): RemainingView {
@@ -114,8 +124,16 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
     remainingRows: [],
     note: null,
     modeLabel: null,
+    balanceRow: null,
+    advanceDetail: null,
   };
   if (a.cancelled) return empty;
+
+  // Stage 1 = the first collection (the advance), stage 2 = everything after
+  // it (the balance). Kept apart so "Advance" never turns into "total paid".
+  const groups = batches(completeRows(a));
+  const staged = advances > 0 && groups.length >= 2;
+  const balancePaid = staged ? sumOf(groups.slice(1).flat()) : 0;
 
   const payableRow: Row | null =
     advances > 0 ? { label: PAYABLE_LABEL, value: a.fmt(payable) } : null;
@@ -130,6 +148,12 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
     remainingRows,
     note: paymentNote(a, remaining, advances),
     modeLabel: splitModeLabel(a),
+    balanceRow:
+      staged && balancePaid > 0
+        ? { label: BALANCE_PAID_LABEL, value: a.fmt(balancePaid) }
+        : null,
+    advanceDetail:
+      advances > 0 && groups[0] ? (modeDetail(groups[0], a.fmt) ?? null) : null,
   };
 }
 
@@ -166,6 +190,15 @@ function modeTotals(rows: PaymentLine[]): [string, number][] {
   return [...m].map(([k, v]) => [k, r2(v)]);
 }
 
+/** "Cash Rs 300 + UPI Rs 200" when the rows used 2+ modes, else null. */
+function modeDetail(
+  rows: PaymentLine[],
+  fmt: (n: number) => string,
+): string | null {
+  const t = modeTotals(rows);
+  return t.length > 1 ? t.map(([k, v]) => `${k} ${fmt(v)}`).join(" + ") : null;
+}
+
 function splitModeLabel(a: RemainingArgs): string | null {
   const rows = batches(completeRows(a)).flat();
   const t = modeTotals(rows);
@@ -192,7 +225,7 @@ function paymentNote(
   const groups = batches(completeRows(a));
   // "Rs 654 via Cash Rs 644 + UPI Rs 10 on 11-10-2026" - every mode of the
   // payment, with its amount when the payment was split.
-  const part = (rows: PaymentLine[]) => {
+  const part = (rows: PaymentLine[], lead = "") => {
     const t = modeTotals(rows);
     const m =
       t.length > 1
@@ -202,11 +235,17 @@ function paymentNote(
     const d = first?.noDate
       ? ""
       : date(first?.received_at || first?.created_at);
-    return `${a.fmt(sumOf(rows))}${m ? ` via ${m}` : ""}${d ? ` on ${d}` : ""}`;
+    return `${lead}${a.fmt(sumOf(rows))}${m ? ` via ${m}` : ""}${d ? ` on ${d}` : ""}`;
   };
 
+  // An advance followed by later payment(s): say which is which, so the first
+  // collection is never read as the whole amount (or the balance as advance).
+  if (groups.length >= 2 && advances > 0)
+    return `${groups
+      .map((g, i) => part(g, i === 0 ? "Advance " : "Balance "))
+      .join("; ")}. ${tail}`;
   if (groups.length >= 2)
-    return `Received ${groups.map(part).join("; ")}. ${tail}`;
+    return `Received ${groups.map((g) => part(g)).join("; ")}. ${tail}`;
   if (groups.length === 1) {
     const label = remaining > 0 ? "Advance received" : "Received";
     return `${label} ${part(groups[0] as PaymentLine[])}. ${tail}`;
@@ -222,14 +261,17 @@ export function splitReceiptTotals(
   totals: { label: string; value: string }[],
 ): {
   payable: { label: string; value: string } | null;
+  balance: { label: string; value: string } | null;
   afterPaid: { label: string; value: string }[];
 } {
   const payable = totals.find((t) => t.label === PAYABLE_LABEL) ?? null;
+  const balance = totals.find((t) => t.label === BALANCE_PAID_LABEL) ?? null;
   const paidAt = totals.findIndex((t) => t.label === "Paid");
   const statusAt = totals.findIndex((t) => t.label === "Status");
   const end = statusAt >= 0 ? statusAt : totals.length;
   return {
     payable,
+    balance,
     afterPaid: paidAt >= 0 ? totals.slice(paidAt + 1, end) : [],
   };
 }

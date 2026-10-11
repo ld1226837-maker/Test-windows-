@@ -41,6 +41,7 @@ import {
   nextInvoiceNo,
   nowIso,
   type BillRow,
+  type PaymentRow,
   type SnackSaleRow,
   type TabEntryRow,
   type TurfBookingRow,
@@ -48,6 +49,8 @@ import {
 import { TAB_PAYMENT_MODE } from "./ops";
 import {
   effectivePaymentEntries,
+  firstBatchRows,
+  normalizeReceivedPaymentMode,
   removePaymentsForParents,
   type EffectivePaymentEntry,
 } from "./payments";
@@ -91,6 +94,13 @@ export type MergePreview = {
    * split text. Display only — derived from the same payment rows that
    * mergeIntoBill carries onto the bill, so preview and save agree. */
   received: ModeBreakdown;
+  /** Of the turf money already collected: the advance (first collection) and
+   * the balance paid after it, with each one's Cash / UPI split text. Display
+   * only; `turfBalance` is 0 when there was no later payment. */
+  turfAdvance: number;
+  turfBalance: number;
+  turfAdvanceSplit: string;
+  turfBalanceSplit: string;
 };
 
 type Source =
@@ -144,6 +154,10 @@ export function mergeMath(
     outstanding,
     tabDelta: round2(outstanding - alreadyOnTab),
     received: modeBreakdown([]),
+    turfAdvance: 0,
+    turfBalance: 0,
+    turfAdvanceSplit: "",
+    turfBalanceSplit: "",
   };
 }
 
@@ -181,6 +195,94 @@ export function carriedPaymentEntries(
     },
     sourceRows,
   );
+}
+
+/**
+ * How the turf bookings' collected money splits into the ADVANCE (each
+ * booking's first collection) and the BALANCE paid after it, with the Cash /
+ * UPI split of each. Display only. Null when no booking has payment rows to
+ * tell the stages apart (the whole amount then prints as before).
+ */
+export function turfAdvanceBalance(
+  bookings: CarrySource[],
+  sourceRows: PaymentRow[],
+): {
+  first: number;
+  balance: number;
+  firstModes: { mode: string; amount: number }[];
+  balanceModes: { mode: string; amount: number }[];
+  firstEntries: EffectivePaymentEntry[];
+  balanceEntries: EffectivePaymentEntry[];
+} | null {
+  const firstE: EffectivePaymentEntry[] = [];
+  const restE: EffectivePaymentEntry[] = [];
+  let any = false;
+  for (const b of bookings) {
+    if (!(b.collected > 0)) continue;
+    const rows = sourceRows.filter(
+      (r) => r.parent_type === "turf_booking" && r.parent_id === b.id,
+    );
+    const firstRows = firstBatchRows(rows);
+    if (firstRows.length === 0) {
+      // No rows: nothing to tell the stages apart, all of it is the advance.
+      firstE.push(
+        ...effectivePaymentEntries(
+          {
+            turf_booking: [
+              { id: b.id, collected: b.collected, mode: b.mode, date: b.date },
+            ],
+          },
+          [],
+        ),
+      );
+      continue;
+    }
+    any = true;
+    const firstSum = Math.min(
+      b.collected,
+      firstRows.reduce((n, r) => n + Number(r.amount), 0),
+    );
+    // The first collection, capped at what the record says was collected.
+    let left = firstSum;
+    for (const r of firstRows) {
+      const take = Math.min(left, Number(r.amount));
+      if (take > 0)
+        firstE.push({
+          parent_type: "turf_booking",
+          parent_id: b.id,
+          amount: take,
+          mode: normalizeReceivedPaymentMode(r.mode),
+          received_at: r.received_at,
+        });
+      left -= take;
+    }
+    // Everything else collected on the booking is the balance, taken from the
+    // later rows (reconciled to the amount the record says was collected).
+    const ids = new Set(firstRows.map((r) => r.id));
+    const laterTotal = rupees(b.collected - firstSum);
+    if (laterTotal > 0)
+      restE.push(
+        ...effectivePaymentEntries(
+          {
+            turf_booking: [
+              { id: b.id, collected: laterTotal, mode: b.mode, date: b.date },
+            ],
+          },
+          rows.filter((r) => !ids.has(r.id)),
+        ),
+      );
+  }
+  if (!any) return null;
+  const first = rupees(firstE.reduce((n, e) => n + e.amount, 0));
+  const balance = rupees(restE.reduce((n, e) => n + e.amount, 0));
+  return {
+    first,
+    balance,
+    firstModes: modeBreakdown(firstE).modes,
+    balanceModes: modeBreakdown(restE).modes,
+    firstEntries: firstE,
+    balanceEntries: restE,
+  };
 }
 
 const modeParts = (entries: EffectivePaymentEntry[], parent: string) =>
@@ -271,7 +373,23 @@ export function previewMerge(args: {
     })),
     args.payments ?? [],
   );
-  return { ...base, received: modeBreakdown(entries) };
+  const stages = turfAdvanceBalance(
+    args.bookings.map((b) => ({
+      id: b.id,
+      mode: b.payment_mode ?? null,
+      date: b.booking_date ?? "",
+      collected: collectedOf(b.id, "b"),
+    })),
+    (args.payments ?? []).filter((p) => p.parent_type === "turf_booking"),
+  );
+  return {
+    ...base,
+    received: modeBreakdown(entries),
+    turfAdvance: stages?.first ?? 0,
+    turfBalance: stages?.balance ?? 0,
+    turfAdvanceSplit: stages ? modeBreakdown(stages.firstEntries).detail : "",
+    turfBalanceSplit: stages ? modeBreakdown(stages.balanceEntries).detail : "",
+  };
 }
 
 type MergeableBooking = {
@@ -481,6 +599,18 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
       const turfModes = modeBreakdown(
         carried.filter((e) => bookingIdSet.has(e.parent_id)),
       ).modes;
+      // Split each booking's money into the advance (first collection) and the
+      // balance paid after it, so the merged bill does not call a settled
+      // balance "advance". Display only.
+      const turfStages = turfAdvanceBalance(
+        bookings.map((b) => ({
+          id: b.id,
+          collected: collectedBy.get(b.id) ?? 0,
+          mode: b.payment_mode,
+          date: b.booking_date,
+        })),
+        sourceRows,
+      );
 
       const status: BillStatus =
         math.collected >= math.total && math.total > 0
@@ -506,6 +636,15 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
                   .reduce((n, x) => n + x.collected, 0),
               ),
               ...(turfModes.length > 0 ? { turf_modes: turfModes } : {}),
+              ...(turfStages
+                ? {
+                    turf_first: turfStages.first,
+                    turf_first_modes: turfStages.firstModes,
+                    ...(turfStages.balanceModes.length > 0
+                      ? { turf_balance_modes: turfStages.balanceModes }
+                      : {}),
+                  }
+                : {}),
               snacks: sales.map((x) => ({
                 bill_no: x.bill_no,
                 items: x.items.length,

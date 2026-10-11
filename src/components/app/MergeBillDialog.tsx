@@ -290,6 +290,20 @@ export function MergeBillDialog() {
                 <p className="text-xs text-muted-foreground">
                   {money(preview.total)} total · {money(preview.collected)}{" "}
                   already collected
+                  {preview.turfBalance > 0 && (
+                    <>
+                      {" "}
+                      (turf advance {money(preview.turfAdvance)}
+                      {preview.turfAdvanceSplit
+                        ? ` [${preview.turfAdvanceSplit}]`
+                        : ""}{" "}
+                      + turf balance {money(preview.turfBalance)}
+                      {preview.turfBalanceSplit
+                        ? ` [${preview.turfBalanceSplit}]`
+                        : ""}
+                      )
+                    </>
+                  )}
                   {preview.received.total > 0 && (
                     <>
                       {" "}

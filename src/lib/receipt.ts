@@ -44,7 +44,12 @@ import {
 } from "./payments";
 import { modeBreakdown, modeBreakdownOf, modeLines } from "./payment-breakdown";
 import { mergedBillBreakdown } from "./merge-breakdown";
-import { joinNotes, pdfSafeText, remainingSummary } from "./remaining-summary";
+import {
+  BALANCE_PAID_LABEL,
+  joinNotes,
+  pdfSafeText,
+  remainingSummary,
+} from "./remaining-summary";
 import { readAppSettings } from "./settings";
 import { buildShareText, type ShareStyle } from "./share-text";
 
@@ -1295,6 +1300,17 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
   const received = modeBreakdown(receiptPaymentRows("bill", bill.id));
   const showReceived = Boolean(merged) && received.total > 0;
   const turfPaid = modeBreakdownOf(bill.merged_breakdown?.turf_modes);
+  // Turf advance (first collection) vs the turf balance paid later, each with
+  // its own Cash / UPI split. Older merged bills only have `turf_modes` (all
+  // turf money together) and keep printing that way.
+  const turfFirst = modeBreakdownOf(bill.merged_breakdown?.turf_first_modes);
+  const turfAdvanceDetail = bill.merged_breakdown?.turf_first_modes
+    ? turfFirst.detail
+    : turfPaid.detail;
+  const turfBalanceModes = bill.merged_breakdown?.turf_balance_modes;
+  const turfBalanceDetail = turfBalanceModes
+    ? modeBreakdownOf(turfBalanceModes).detail
+    : "";
   // Display only: what is left to pay after the advances, plus a payment note.
   const remainingView = remainingSummary({
     grandTotal,
@@ -1353,8 +1369,17 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
             ? [
                 {
                   label: "Advance paid",
-                  ...(turfPaid.detail ? { sub: turfPaid.detail } : {}),
+                  ...(turfAdvanceDetail ? { sub: turfAdvanceDetail } : {}),
                   amount: -merged.advancePaid,
+                },
+              ]
+            : []),
+          ...(merged.turfBalancePaid > 0
+            ? [
+                {
+                  label: "Balance paid",
+                  ...(turfBalanceDetail ? { sub: turfBalanceDetail } : {}),
+                  amount: -merged.turfBalancePaid,
                 },
               ]
             : []),
@@ -1380,6 +1405,9 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
                   label: "Advance paid",
                   // Display only: the advance actually entered, not the running
                   // paid total (which becomes the full amount once settled).
+                  ...(remainingView.advanceDetail
+                    ? { sub: remainingView.advanceDetail }
+                    : {}),
                   amount: -Math.min(
                     paid,
                     receiptAdvanceAmount("bill", bill.id, paid),
@@ -1409,6 +1437,10 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
         : []),
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
       ...(remainingView.payableRow ? [remainingView.payableRow] : []),
+      ...(remainingView.balanceRow ? [remainingView.balanceRow] : []),
+      ...(merged && merged.turfBalancePaid > 0
+        ? [{ label: BALANCE_PAID_LABEL, value: pmoney(merged.turfBalancePaid) }]
+        : []),
       { label: "Paid", value: pmoney(paid) },
       ...remainingView.remainingRows,
       // Merged bill: how the collected money arrived — Cash, Online and the
@@ -1437,7 +1469,7 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
     textMode: showReceived && received.split ? received.split : undefined,
     textAdvance: merged
       ? merged.advancePaid > 0
-        ? `${pmoney(merged.advancePaid)}${turfPaid.detail ? ` (${turfPaid.detail})` : ""}`
+        ? `${pmoney(merged.advancePaid)}${turfAdvanceDetail ? ` (${turfAdvanceDetail})` : ""}`
         : undefined
       : (advanceCollectedText(
           "bill",
@@ -1591,6 +1623,9 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
         ? [
             {
               label: "Advance paid",
+              ...(remainingView.advanceDetail
+                ? { sub: remainingView.advanceDetail }
+                : {}),
               // Display only: the advance actually entered, not the running
               // paid total.
               amount: -Math.min(
@@ -1618,6 +1653,7 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
         : []),
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
       ...(remainingView.payableRow ? [remainingView.payableRow] : []),
+      ...(remainingView.balanceRow ? [remainingView.balanceRow] : []),
       { label: "Paid", value: pmoney(b.advance_paid) },
       ...remainingView.remainingRows,
       {

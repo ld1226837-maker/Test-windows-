@@ -342,7 +342,12 @@ export function turfBookingExportColumns(
   const info = merged ? bookingPaymentBreakdown(b, rows, tabEntries, true) : bp;
   return {
     "Booking type": bp.kind,
-    "Advance (first payment)": bp.advance,
+    // Only a real advance: a booking paid in ONE collection (nothing taken up
+    // front) reports 0 here; its money is in "Total paid so far" and the
+    // Total collected columns.
+    "Advance (first payment)": bp.lines.some((l) => l.stage === "Full payment")
+      ? 0
+      : bp.advance,
     "Remaining collected": bp.remaining,
     "Remaining collected - Cash": bp.remainingCash,
     "Remaining collected - Online": bp.remainingOnline,

@@ -34,10 +34,20 @@ export type MergedBreakdown = {
   v: 1;
   /** The first `turf_items` bill items are turf lines; snack items follow. */
   turf_items: number;
-  /** Turf booking advance actually collected (never includes snack money). */
+  /** Turf booking money actually collected (never includes snack money).
+   * Historically named "advance": it is the advance PLUS any balance the
+   * customer paid on the booking before it was merged. */
   turf_advance: number;
-  /** Optional: how the turf advance was received (Cash / UPI / Card). */
+  /** Optional: how all of that turf money was received (Cash / UPI / Card). */
   turf_modes?: { mode: string; amount: number }[];
+  /** Optional: the part of `turf_advance` that was the FIRST collection (the
+   * real advance). Absent on bills merged before this field existed; then the
+   * whole `turf_advance` prints as the advance, exactly as before. */
+  turf_first?: number;
+  /** Optional: how that first collection was received. */
+  turf_first_modes?: { mode: string; amount: number }[];
+  /** Optional: how the later turf balance was received. */
+  turf_balance_modes?: { mode: string; amount: number }[];
   snacks: MergedSnackPart[];
 };
 
@@ -46,8 +56,12 @@ export type MergedLineGroup =
   | { kind: "snack"; start: number; end: number; bill_no: string };
 
 export type MergedBillView = {
-  /** Positive rupees; print as a negative line. */
+  /** Positive rupees; print as a negative line. The turf ADVANCE (first
+   * collection); falls back to all turf money on older merged bills. */
   advancePaid: number;
+  /** Positive rupees: turf money collected after the advance and before the
+   * merge. 0 when there was none (and on older merged bills). */
+  turfBalancePaid: number;
   /** Positive rupees; print as a negative line, omit when 0. */
   snacksPaid: number;
   /** grandTotal − paid, never negative. */
@@ -89,10 +103,16 @@ export function mergedBillBreakdown(args: {
     0,
   );
   const snacksPaid = Math.min(paid, snackPaidTotal);
-  const advancePaid = Math.min(
+  const turfPaid = Math.min(
     Math.max(0, whole(bd.turf_advance)),
     Math.max(0, paid - snacksPaid),
   );
+  const first =
+    bd.turf_first === undefined
+      ? turfPaid
+      : Math.min(Math.max(0, whole(bd.turf_first)), turfPaid);
+  const advancePaid = first;
+  const turfBalancePaid = turfPaid - first;
 
   const groups: MergedLineGroup[] = [];
   if (turfItems > 0) groups.push({ kind: "turf", start: 0, end: turfItems });
@@ -106,6 +126,7 @@ export function mergedBillBreakdown(args: {
 
   return {
     advancePaid,
+    turfBalancePaid,
     snacksPaid,
     balanceDue: Math.max(0, whole(args.grandTotal) - paid),
     groups,

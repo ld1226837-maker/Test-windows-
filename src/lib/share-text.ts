@@ -17,7 +17,11 @@
  * alignment by spaces, never two blank lines in a row, "\n" only.
  */
 import type { ReceiptDoc } from "./receipt";
-import { REMAINING_LABEL, pdfSafeText } from "./remaining-summary";
+import {
+  BALANCE_PAID_LABEL,
+  REMAINING_LABEL,
+  pdfSafeText,
+} from "./remaining-summary";
 
 export type ShareStyle = "whatsapp" | "plain";
 
@@ -195,7 +199,11 @@ export function buildShareText(doc: ReceiptDoc, o: ShareOptions): string {
       let advanceDone = false;
       let snacksDone = false;
       for (const t of after) {
-        if (t.label === "Paid" && doc.textAdvance && !advanceDone) {
+        if (
+          (t.label === "Paid" || t.label === BALANCE_PAID_LABEL) &&
+          doc.textAdvance &&
+          !advanceDone
+        ) {
           rows.push({
             t: "line",
             s: `Advance collected: ${ascii(doc.textAdvance)}`,

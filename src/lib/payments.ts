@@ -671,6 +671,37 @@ export function receiptModeLabel(
 const ADVANCE_BATCH_MS = 1000;
 
 /**
+ * The FIRST collection on a record (everything stamped within a second of the
+ * earliest row, so each part of a Cash + UPI split is included). This is the
+ * advance; later rows are balance payments. Pure and display-only.
+ */
+export function firstBatchRows<
+  T extends { amount: number; created_at: string },
+>(rows: readonly T[]): T[] {
+  const sorted = rows
+    .filter((r) => Number(r.amount) > 0)
+    .slice()
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const first = sorted[0];
+  if (!first) return [];
+  const t0 = Date.parse(first.created_at);
+  return sorted.filter(
+    (r) =>
+      !Number.isFinite(t0) ||
+      Math.abs(Date.parse(r.created_at) - t0) <= ADVANCE_BATCH_MS,
+  );
+}
+
+/** Sum of the first collection, or `fallback` when there are no rows. */
+export function advanceOfRows(
+  rows: readonly { amount: number; created_at: string }[],
+  fallback: number,
+): number {
+  const sum = firstBatchRows(rows).reduce((n, r) => n + Number(r.amount), 0);
+  return sum > 0 ? Math.round(sum * 100) / 100 : fallback;
+}
+
+/**
  * The advance a receipt's "Advance paid" line should print: the money the
  * customer actually handed over up front (the first receipt, including each
  * part of a split such as Cash + UPI), NOT the running total collected so far.
@@ -687,20 +718,8 @@ export function receiptAdvanceAmount(
   parentId: string,
   fallback: number,
 ): number {
-  const rows = (receiptIndex.get(`${parentType}:${parentId}`) ?? [])
-    .filter((r) => Number(r.amount) > 0)
-    .slice()
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
-  const first = rows[0];
-  if (!first) return fallback;
-  // One receipt (or one split receipt) is written in a single transaction, so
-  // its parts are stamped within milliseconds of each other.
-  const t0 = Date.parse(first.created_at);
-  const initial = rows.filter(
-    (r) =>
-      !Number.isFinite(t0) ||
-      Math.abs(Date.parse(r.created_at) - t0) <= ADVANCE_BATCH_MS,
+  return advanceOfRows(
+    receiptIndex.get(`${parentType}:${parentId}`) ?? [],
+    fallback,
   );
-  const sum = initial.reduce((n, r) => n + Number(r.amount), 0);
-  return sum > 0 ? Math.round(sum * 100) / 100 : fallback;
 }

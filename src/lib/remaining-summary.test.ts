@@ -38,7 +38,7 @@ describe("remainingSummary (display only)", () => {
       value: "Rs 0",
     });
     expect(v.note).toBe(
-      "Received Rs 654 via Cash Rs 644 + UPI Rs 10 on 2026-10-09; Rs 2,240 via UPI on 2026-10-10. Remaining Rs 0 - settled in full.",
+      "Advance Rs 654 via Cash Rs 644 + UPI Rs 10 on 2026-10-09; Balance Rs 2,240 via UPI on 2026-10-10. Remaining Rs 0 - settled in full.",
     );
   });
 
@@ -54,7 +54,7 @@ describe("remainingSummary (display only)", () => {
       fmtDate: (d) => d.slice(0, 10),
     });
     expect(v.note).toBe(
-      "Received Rs 500 via UPI on 2026-10-11; Rs 900 via Cash. Remaining Rs 0 - settled in full.",
+      "Advance Rs 500 via UPI on 2026-10-11; Balance Rs 900 via Cash. Remaining Rs 0 - settled in full.",
     );
     expect(v.modeLabel).toBe("UPI Rs 500 + Cash Rs 900");
   });
@@ -177,7 +177,7 @@ describe("missing settlement and mode names", () => {
       fallbackDate: "2026-10-11",
     });
     expect(v.note).toBe(
-      "Received Rs 500 via UPI on 11-10-2026; Rs 900 via Cash. Remaining Rs 0 - settled in full.",
+      "Advance Rs 500 via UPI on 11-10-2026; Balance Rs 900 via Cash. Remaining Rs 0 - settled in full.",
     );
     expect(v.modeLabel).toBe("UPI Rs 500 + Cash Rs 900");
   });
