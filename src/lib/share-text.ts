@@ -184,7 +184,12 @@ export function buildShareText(doc: ReceiptDoc, o: ShareOptions): string {
   // them off too (Paid and the Note are what remain below the total).
   const hasHidden = doc.totals.some((t) => t.printHide);
   const totals = doc.totals
-    .filter((t) => !t.printHide && !(hasHidden && t.label === "Status"))
+    .filter(
+      (t) =>
+        // Paid stays in the copy even though the bill itself omits it.
+        (!t.printHide || t.label === "Paid") &&
+        !(hasHidden && t.label === "Status"),
+    )
     .map((t) => ({
       label: ascii(t.label),
       value:

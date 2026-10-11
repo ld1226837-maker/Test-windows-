@@ -604,7 +604,7 @@ function renderBoxed(
     // due" appeared above the total it is calculated from.
     const grandIdx = grand ? doc.totals.indexOf(grand) : doc.totals.length;
     const visibleTotal = (t: (typeof doc.totals)[number]) =>
-      t !== grand && t.label !== "Status";
+      t !== grand && t.label !== "Status" && !t.printHide;
     const totalsBefore = doc.totals.slice(0, grandIdx).filter(visibleTotal);
     const totalsAfter = doc.totals.slice(grandIdx + 1).filter(visibleTotal);
     pdf.setFont("helvetica", "normal");
@@ -1000,6 +1000,7 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
 
     const grand = doc.totals.find((t) => t.strong);
     for (const t of doc.totals) {
+      if (t.printHide) continue;
       const bold = t === grand;
       pdf.setFont("helvetica", bold ? "bold" : "normal");
       pdf.setFontSize(

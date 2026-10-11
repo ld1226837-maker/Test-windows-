@@ -1732,7 +1732,12 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
       // Only a small "Paid" line stays under the total on the printed bill;
       // payable / balance / mode rows are hidden from print (copy text keeps
       // them) and an unsettled balance is still printed.
-      { label: "Paid", value: pmoney(b.advance_paid), small: true },
+      {
+        label: "Paid",
+        value: pmoney(b.advance_paid),
+        small: true,
+        printHide: true,
+      },
       ...remainingView.remainingRows.map((r) =>
         due > 0 ? r : { ...r, printHide: true },
       ),
