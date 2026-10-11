@@ -1392,6 +1392,9 @@ export function TurfTab({
                                 // over the sheet never counts them twice.
                                 "Advance (first payment)":
                                   extra["Advance (first payment)"] ?? 0,
+                                "Advance - Cash": extra["Advance - Cash"] ?? 0,
+                                "Advance - Online":
+                                  extra["Advance - Online"] ?? 0,
                                 "Remaining collected":
                                   extra["Remaining collected"] ?? 0,
                                 "Remaining collected - Cash":
@@ -1408,7 +1411,10 @@ export function TurfTab({
                                   extra["Total collected - Online"] ?? 0,
                                 "Booking type": extra["Booking type"] ?? "",
                                 "Payment split": extra["Payment split"] ?? "",
-                                "Split detail": extra["Split detail"] ?? "",
+                                "Advance split": extra["Advance split"] ?? "",
+                                "Balance split": extra["Balance split"] ?? "",
+                                "Full payment split":
+                                  extra["Full payment split"] ?? "",
                                 "Split pay used": extra["Split pay used"] ?? "",
                               },
                             ];
@@ -1432,6 +1438,8 @@ export function TurfTab({
                                     ),
                                 Notes: "",
                                 "Advance (first payment)": 0,
+                                "Advance - Cash": 0,
+                                "Advance - Online": 0,
                                 "Remaining collected": 0,
                                 "Remaining collected - Cash": 0,
                                 "Remaining collected - Online": 0,
@@ -1441,7 +1449,10 @@ export function TurfTab({
                                 "Total collected - Online": 0,
                                 "Booking type": extra["Booking type"] ?? "",
                                 "Payment split": extra["Payment split"] ?? "",
-                                "Split detail": extra["Split detail"] ?? "",
+                                "Advance split": extra["Advance split"] ?? "",
+                                "Balance split": extra["Balance split"] ?? "",
+                                "Full payment split":
+                                  extra["Full payment split"] ?? "",
                                 "Split pay used": extra["Split pay used"] ?? "",
                               });
                             }
@@ -1612,7 +1623,14 @@ export function TurfTab({
                               )}
                               {breakdown.splitUsed && (
                                 <p className="text-xs text-muted-foreground">
-                                  Split pay · {breakdown.splitDetail}
+                                  Split pay
+                                  {breakdown.advanceSplit &&
+                                    ` · Advance ${breakdown.advanceSplit}`}
+                                  {breakdown.balanceSplit &&
+                                    ` · Balance ${breakdown.balanceSplit}`}
+                                  {!breakdown.balanceSplit &&
+                                    !breakdown.advanceSplit &&
+                                    ` · ${breakdown.splitDetail}`}
                                 </p>
                               )}
                               {moved && (

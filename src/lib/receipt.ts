@@ -1415,6 +1415,17 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
                 },
               ]
             : []),
+          ...(remainingView.balancePaid > 0
+            ? [
+                {
+                  label: "Balance paid",
+                  ...(remainingView.balanceModeText
+                    ? { sub: remainingView.balanceModeText }
+                    : {}),
+                  amount: -remainingView.balancePaid,
+                },
+              ]
+            : []),
         ],
     totals: [
       { label: "Subtotal", value: pmoney(bill.subtotal) },
@@ -1445,8 +1456,22 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
       ...remainingView.remainingRows,
       // Merged bill: how the collected money arrived — Cash, Online and the
       // split — plus the turf and per-snack-bill parts.
-      ...(showReceived ? modeLines(received, pmoney) : []),
-      ...(showReceived && turfPaid.total > 0
+      // When the turf money came in two stages, the advance and the balance
+      // print on their own lines above, so the combined "Split payment"
+      // amounts row (advance + balance + snacks added together) is left out.
+      ...(showReceived
+        ? modeLines(received, pmoney).filter(
+            (l) =>
+              !(
+                merged &&
+                merged.turfBalancePaid > 0 &&
+                l.label === "Split payment"
+              ),
+          )
+        : []),
+      ...(showReceived &&
+      turfPaid.total > 0 &&
+      !(merged && merged.turfBalancePaid > 0)
         ? [{ label: "Turf paid", value: turfPaid.detail }]
         : []),
       ...(showReceived
@@ -1462,7 +1487,28 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
               : [];
           })
         : []),
-      ...(modeValue ? [{ label: "Mode", value: modeValue }] : []),
+      ...(!merged && remainingView.balancePaid > 0
+        ? [
+            ...(remainingView.advanceModeText
+              ? [
+                  {
+                    label: "Advance mode",
+                    value: remainingView.advanceModeText,
+                  },
+                ]
+              : []),
+            ...(remainingView.balanceModeText
+              ? [
+                  {
+                    label: "Balance mode",
+                    value: remainingView.balanceModeText,
+                  },
+                ]
+              : []),
+          ]
+        : modeValue
+          ? [{ label: "Mode", value: modeValue }]
+          : []),
       { label: "Status", value: bill.status.toUpperCase() },
     ],
     note: remainingView.note,
@@ -1634,6 +1680,17 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
               ),
             },
           ]
+        : []), // The balance collected later is its own line, with its own split.
+      ...(remainingView.balancePaid > 0
+        ? [
+            {
+              label: "Balance paid",
+              ...(remainingView.balanceModeText
+                ? { sub: remainingView.balanceModeText }
+                : {}),
+              amount: -remainingView.balancePaid,
+            },
+          ]
         : []),
     ],
     totals: [
@@ -1656,12 +1713,35 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
       ...(remainingView.balanceRow ? [remainingView.balanceRow] : []),
       { label: "Paid", value: pmoney(b.advance_paid) },
       ...remainingView.remainingRows,
-      {
-        label: "Mode",
-        value:
-          remainingView.modeLabel ??
-          receiptModeLabel("turf_booking", b.id, b.payment_mode),
-      },
+      // Advance and balance each get their own Mode line (never one
+      // combined Cash + UPI total across both).
+      ...(remainingView.balancePaid > 0
+        ? [
+            ...(remainingView.advanceModeText
+              ? [
+                  {
+                    label: "Advance mode",
+                    value: remainingView.advanceModeText,
+                  },
+                ]
+              : []),
+            ...(remainingView.balanceModeText
+              ? [
+                  {
+                    label: "Balance mode",
+                    value: remainingView.balanceModeText,
+                  },
+                ]
+              : []),
+          ]
+        : [
+            {
+              label: "Mode",
+              value:
+                remainingView.modeLabel ??
+                receiptModeLabel("turf_booking", b.id, b.payment_mode),
+            },
+          ]),
       { label: "Status", value: b.status },
     ],
     note: joinNotes(b.notes, remainingView.note),

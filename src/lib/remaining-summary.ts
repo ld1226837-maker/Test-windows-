@@ -110,6 +110,14 @@ export type RemainingView = {
   /** How the advance itself was received ("Cash Rs 300 + UPI Rs 200"), when
    * the advance was split across 2+ modes. */
   advanceDetail: string | null;
+  /** Staged payment only (advance, then a later balance): how the ADVANCE was
+   * received, e.g. "Cash Rs 300 + UPI Rs 200" or just "UPI". Null otherwise. */
+  advanceModeText: string | null;
+  /** Staged payment only: how the BALANCE was received, kept apart from the
+   * advance (never added together). Null otherwise. */
+  balanceModeText: string | null;
+  /** Staged payment only: the balance amount collected after the advance. */
+  balancePaid: number;
 };
 
 export function remainingSummary(a: RemainingArgs): RemainingView {
@@ -126,6 +134,9 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
     modeLabel: null,
     balanceRow: null,
     advanceDetail: null,
+    advanceModeText: null,
+    balanceModeText: null,
+    balancePaid: 0,
   };
   if (a.cancelled) return empty;
 
@@ -135,6 +146,7 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
   const staged = advances > 0 && groups.length >= 2;
   const balancePaid = staged ? sumOf(groups.slice(1).flat()) : 0;
 
+  const showStaged = staged && balancePaid > 0;
   const payableRow: Row | null =
     advances > 0 ? { label: PAYABLE_LABEL, value: a.fmt(payable) } : null;
   const remainingRows: Row[] = [
@@ -154,6 +166,12 @@ export function remainingSummary(a: RemainingArgs): RemainingView {
         : null,
     advanceDetail:
       advances > 0 && groups[0] ? (modeDetail(groups[0], a.fmt) ?? null) : null,
+    advanceModeText:
+      showStaged && groups[0] ? modeText(groups[0], a.fmt) : null,
+    balanceModeText: showStaged
+      ? modeText(groups.slice(1).flat(), a.fmt)
+      : null,
+    balancePaid: showStaged ? balancePaid : 0,
   };
 }
 
@@ -197,6 +215,18 @@ function modeDetail(
 ): string | null {
   const t = modeTotals(rows);
   return t.length > 1 ? t.map(([k, v]) => `${k} ${fmt(v)}`).join(" + ") : null;
+}
+
+/** "Cash Rs 300 + UPI Rs 200" when split, else the single mode ("UPI"). */
+function modeText(
+  rows: PaymentLine[],
+  fmt: (n: number) => string,
+): string | null {
+  const t = modeTotals(rows);
+  if (t.length === 0) return null;
+  return t.length > 1
+    ? t.map(([k, v]) => `${k} ${fmt(v)}`).join(" + ")
+    : (t[0]?.[0] ?? null);
 }
 
 function splitModeLabel(a: RemainingArgs): string | null {

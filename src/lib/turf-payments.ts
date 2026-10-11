@@ -73,6 +73,13 @@ export type TurfPaymentBreakdown = {
   splitDetail: string;
   /** Two or more different modes were used on this booking. */
   splitUsed: boolean;
+  /** Advance (first collection) on its own: Cash / Online amounts and the
+   * per-mode text, never mixed with the balance. */
+  advanceCash: number;
+  advanceOnline: number;
+  advanceSplit: string;
+  /** Balance (every later collection) on its own, same shape. */
+  balanceSplit: string;
   kind: TurfBookingKind;
   /** "Advance ₹500 · Remaining paid ₹700 (...) on 12 Oct" style text, or "". */
   note: string;
@@ -260,6 +267,11 @@ export function bookingPaymentBreakdown(
   const onlineOf = (xs: TurfPaymentLine[]) =>
     sum(xs.filter((l) => isOnlinePaymentMode(l.mode)));
 
+  const stageSplit = (xs: TurfPaymentLine[]) =>
+    [...modeSummary(xs)]
+      .map(([mode, amt]) => `${mode} ${money(amt)}`)
+      .join(" + ");
+
   const remainingLastDate = remainingLines.reduce(
     (latest, l) => (l.receivedAt > latest ? l.receivedAt : latest),
     "",
@@ -309,6 +321,10 @@ export function bookingPaymentBreakdown(
     splitLabel: splitLabelFor(lines),
     splitDetail,
     splitUsed: byMode.size > 1,
+    advanceCash: cashOf(advanceLines),
+    advanceOnline: onlineOf(advanceLines),
+    advanceSplit: stageSplit(advanceLines),
+    balanceSplit: stageSplit(remainingLines),
     kind: turfBookingKind(b),
     note,
   };
@@ -317,6 +333,8 @@ export function bookingPaymentBreakdown(
 /** Money columns added by turfBookingExportColumns (for `moneyColumns`). */
 export const TURF_EXPORT_MONEY_COLUMNS = [
   "Advance (first payment)",
+  "Advance - Cash",
+  "Advance - Online",
   "Remaining collected",
   "Remaining collected - Cash",
   "Remaining collected - Online",
@@ -340,6 +358,7 @@ export function turfBookingExportColumns(
   // The numbers stay 0 for a merged booking (its money is on the bill); the
   // text columns still say how it was paid.
   const info = merged ? bookingPaymentBreakdown(b, rows, tabEntries, true) : bp;
+  const isFull = info.lines.some((l) => l.stage === "Full payment");
   return {
     "Booking type": bp.kind,
     // Only a real advance: a booking paid in ONE collection (nothing taken up
@@ -348,6 +367,12 @@ export function turfBookingExportColumns(
     "Advance (first payment)": bp.lines.some((l) => l.stage === "Full payment")
       ? 0
       : bp.advance,
+    "Advance - Cash": bp.lines.some((l) => l.stage === "Full payment")
+      ? 0
+      : bp.advanceCash,
+    "Advance - Online": bp.lines.some((l) => l.stage === "Full payment")
+      ? 0
+      : bp.advanceOnline,
     "Remaining collected": bp.remaining,
     "Remaining collected - Cash": bp.remainingCash,
     "Remaining collected - Online": bp.remainingOnline,
@@ -362,7 +387,11 @@ export function turfBookingExportColumns(
         ? "n/a"
         : `${info.splitLabel} (paid on merged bill)`
       : bp.splitLabel,
-    "Split detail": info.splitDetail,
+    // Advance and balance are kept on separate columns (never one combined
+    // "Cash + UPI" total). A booking paid in one collection has no balance.
+    "Advance split": isFull ? "" : info.advanceSplit,
+    "Balance split": info.balanceSplit,
+    "Full payment split": isFull ? info.advanceSplit : "",
     "Split pay used": bp.splitUsed ? "Yes" : "No",
   };
 }

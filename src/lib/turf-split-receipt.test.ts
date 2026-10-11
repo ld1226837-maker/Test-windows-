@@ -79,8 +79,13 @@ describe("turf booking: advance split vs balance split (TURF-20261011-0003)", ()
     expect(t(doc, "Balance paid")).toBe("Rs 3,500");
     expect(t(doc, "Paid")).toBe("Rs 4,000");
     expect(t(doc, "Remaining to be paid")).toBe("Rs 0");
-    // Mode adds up to everything paid (4,000), not only the advance.
-    expect(t(doc, "Mode")).toBe("Cash Rs 750 + UPI Rs 3,250");
+    // Advance and balance each have their own mode line, never added together.
+    expect(t(doc, "Mode")).toBeUndefined();
+    expect(t(doc, "Advance mode")).toBe("Cash Rs 300 + UPI Rs 200");
+    expect(t(doc, "Balance mode")).toBe("Cash Rs 450 + UPI Rs 3,050");
+    const bal = doc.lines.find((l) => l.label === "Balance paid");
+    expect(bal?.amount).toBe(-3500);
+    expect(bal?.sub).toBe("Cash Rs 450 + UPI Rs 3,050");
     expect(doc.note).toContain(
       "Advance Rs 500 via Cash Rs 300 + UPI Rs 200 on 11-10-2026; Balance Rs 3,500 via Cash Rs 450 + UPI Rs 3,050 on 11-10-2026. Remaining Rs 0 - settled in full.",
     );
@@ -100,7 +105,9 @@ describe("turf booking: advance split vs balance split (TURF-20261011-0003)", ()
     );
     expect(text).toContain("Balance paid: Rs 3,500");
     expect(text).toContain("Paid: Rs 4,000");
-    expect(text).toContain("Mode: Cash Rs 750 + UPI Rs 3,250");
+    expect(text).toContain("Advance mode: Cash Rs 300 + UPI Rs 200");
+    expect(text).toContain("Balance mode: Cash Rs 450 + UPI Rs 3,050");
+    expect(text).not.toContain("Cash Rs 750");
     expect(text.indexOf("Advance collected")).toBeLessThan(
       text.indexOf("Balance paid"),
     );
