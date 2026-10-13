@@ -1,4 +1,5 @@
 import { money, rupees } from "./money";
+import { readAppSettings, taxBreakdown } from "./settings";
 import { isOnlinePaymentMode } from "./ops";
 import {
   db,
@@ -317,21 +318,27 @@ export async function recordPayment(
     // dependency chain, so pulling it back into the ledger would create a
     // runtime initialization cycle. All three persisted parents carry a
     // frozen tax snapshot, so their immutable gross ceiling is the taxable
-    // amount plus that stored tax.
+    // amount plus that stored tax. A row from before tax was frozen has no
+    // snapshot: it is taxed at the live rate, exactly as grossWithTax() (and so
+    // the printed Grand Total) does, so collecting the printed total is never
+    // refused. `settings.ts` only imports money, so it is safe to use here.
+    const grossOf = (taxable: unknown, tax: unknown) => {
+      const base = rupees(Number(taxable));
+      return typeof tax === "number"
+        ? rupees(base + tax)
+        : rupees(base + taxBreakdown(base, readAppSettings()).taxAmount);
+    };
     const gross =
       parentType === "bill"
-        ? rupees(
-            Number((parent as BillRow).total) +
-              Number((parent as BillRow).tax_amount || 0),
-          )
+        ? grossOf((parent as BillRow).total, (parent as BillRow).tax_amount)
         : parentType === "turf_booking"
-          ? rupees(
-              Number((parent as TurfBookingRow).total_amount) +
-                Number((parent as TurfBookingRow).tax_amount || 0),
+          ? grossOf(
+              (parent as TurfBookingRow).total_amount,
+              (parent as TurfBookingRow).tax_amount,
             )
-          : rupees(
-              Number((parent as SnackSaleRow).total) +
-                Number((parent as SnackSaleRow).tax_amount || 0),
+          : grossOf(
+              (parent as SnackSaleRow).total,
+              (parent as SnackSaleRow).tax_amount,
             );
     if (total > gross + 0.001) {
       throw new Error(
@@ -648,6 +655,15 @@ export function setReceiptPayments(rows: PaymentRow[]) {
   receiptIndex = next;
 }
 
+/** The payment rows on file for one record (empty when none), from the same
+ * in-memory index receipts use. Display only. */
+export function receiptPaymentRows(
+  parentType: PaymentParentType,
+  parentId: string,
+): PaymentRow[] {
+  return receiptIndex.get(`${parentType}:${parentId}`) ?? [];
+}
+
 /** The "Mode" a receipt should print: the split when the record was paid in
  * several modes, otherwise the record's own mode. */
 export function receiptModeLabel(
@@ -660,6 +676,37 @@ export function receiptModeLabel(
 }
 
 const ADVANCE_BATCH_MS = 1000;
+
+/**
+ * The FIRST collection on a record (everything stamped within a second of the
+ * earliest row, so each part of a Cash + UPI split is included). This is the
+ * advance; later rows are balance payments. Pure and display-only.
+ */
+export function firstBatchRows<
+  T extends { amount: number; created_at: string },
+>(rows: readonly T[]): T[] {
+  const sorted = rows
+    .filter((r) => Number(r.amount) > 0)
+    .slice()
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const first = sorted[0];
+  if (!first) return [];
+  const t0 = Date.parse(first.created_at);
+  return sorted.filter(
+    (r) =>
+      !Number.isFinite(t0) ||
+      Math.abs(Date.parse(r.created_at) - t0) <= ADVANCE_BATCH_MS,
+  );
+}
+
+/** Sum of the first collection, or `fallback` when there are no rows. */
+export function advanceOfRows(
+  rows: readonly { amount: number; created_at: string }[],
+  fallback: number,
+): number {
+  const sum = firstBatchRows(rows).reduce((n, r) => n + Number(r.amount), 0);
+  return sum > 0 ? Math.round(sum * 100) / 100 : fallback;
+}
 
 /**
  * The advance a receipt's "Advance paid" line should print: the money the
@@ -678,20 +725,8 @@ export function receiptAdvanceAmount(
   parentId: string,
   fallback: number,
 ): number {
-  const rows = (receiptIndex.get(`${parentType}:${parentId}`) ?? [])
-    .filter((r) => Number(r.amount) > 0)
-    .slice()
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
-  const first = rows[0];
-  if (!first) return fallback;
-  // One receipt (or one split receipt) is written in a single transaction, so
-  // its parts are stamped within milliseconds of each other.
-  const t0 = Date.parse(first.created_at);
-  const initial = rows.filter(
-    (r) =>
-      !Number.isFinite(t0) ||
-      Math.abs(Date.parse(r.created_at) - t0) <= ADVANCE_BATCH_MS,
+  return advanceOfRows(
+    receiptIndex.get(`${parentType}:${parentId}`) ?? [],
+    fallback,
   );
-  const sum = initial.reduce((n, r) => n + Number(r.amount), 0);
-  return sum > 0 ? Math.round(sum * 100) / 100 : fallback;
 }

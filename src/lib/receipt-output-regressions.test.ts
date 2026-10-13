@@ -118,11 +118,24 @@ describe("totals order and column clipping", () => {
     notes: null,
     ...over,
   });
-  it("an On-tab snack sale shows Paid 0, Balance due and UNPAID", () => {
+  for (const templateStyle of ["classic", "premium"] as const)
+    it(`${templateStyle}: a split-mode payment receipt never prints the rupee sign`, () => {
+      const d = paymentReceipt({
+        customer: "A",
+        against: "Bill INV-1",
+        amount: 1610,
+        mode: "Cash \u20b9500 + UPI \u20b91,110",
+        balanceAfter: 0,
+      });
+      const { calls } = render(d, { paper: "a4", templateStyle });
+      expect(calls.some((c) => c.text.includes("Cash Rs 500"))).toBe(true);
+      expect(calls.some((c) => c.text.includes("\u20b9"))).toBe(false);
+    });
+  it("an On-tab snack sale shows Paid 0, Remaining to be paid and MOVED TO DUES", () => {
     const d = snackSaleReceipt(sale());
     const get = (l: string) => d.totals.find((t) => t.label === l)?.value;
-    expect(get("Balance due")).toMatch(/45/);
-    expect(get("Status")).toBe("UNPAID");
+    expect(get("Remaining to be paid")).toMatch(/45/);
+    expect(get("Status")).toBe("MOVED TO DUES");
     expect(
       snackSaleReceipt(sale({ payment_mode: "Cash" })).totals.find(
         (t) => t.label === "Status",
@@ -131,12 +144,12 @@ describe("totals order and column clipping", () => {
   });
   for (const paper of ["80mm", "58mm", "a4", "a5"] as const)
     for (const templateStyle of ["classic", "premium"] as const)
-      it(`${paper}/${templateStyle}: Balance due prints BELOW the grand-total row, nothing is clipped`, () => {
+      it(`${paper}/${templateStyle}: Remaining to be paid prints BELOW the grand-total row, nothing is clipped`, () => {
         const d = snackSaleReceipt(sale());
         const { calls } = render(d, { paper, templateStyle });
         const yOf = (re: RegExp) => calls.find((c) => re.test(c.text))?.y;
         const grand = yOf(/GRAND TOTAL/i);
-        const bal = yOf(/Balance due/i);
+        const bal = yOf(/Remaining to be paid/i);
         expect(grand).toBeDefined();
         expect(bal).toBeDefined();
         expect(bal!).toBeGreaterThan(grand!);
@@ -208,7 +221,7 @@ describe("generated numbers, file names, text", () => {
       } as SnackSale),
     );
     expect(t).toContain("\n\n");
-    expect(t).toContain("2 × Tea");
+    expect(t).toContain("1. Tea - 2 x Rs 10 = Rs 20");
     expect(t).not.toContain("₹");
     expect(t).toContain("Rs 20");
   });

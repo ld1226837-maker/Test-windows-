@@ -5,6 +5,7 @@ import { SectionHeading } from "@/components/app/SectionHeading";
 import { cn, localDateStr } from "@/lib/utils";
 import { DAY_PARTS, parseMinutes } from "@/lib/time-slot-utils";
 import type { TurfBooking } from "@/lib/ops";
+import { isLive } from "@/lib/bill-state";
 import { courtHourSegments, utilisationPct } from "@/lib/courts";
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -56,11 +57,7 @@ export function TurfUtilizationCard({ bookings, totalCourts = 1 }: Props) {
     // the other technically.
     const inWindow = bookings.filter(
       (b) =>
-        b.status !== "Cancelled" &&
-        b.status !== "No-show" &&
-        b.booking_date >= cutoffKey &&
-        b.start_time &&
-        b.end_time,
+        isLive(b) && b.booking_date >= cutoffKey && b.start_time && b.end_time,
     );
 
     // Booked-hours accumulated per (weekday, day-part) cell.
@@ -68,12 +65,33 @@ export function TurfUtilizationCard({ bookings, totalCourts = 1 }: Props) {
     for (const b of inWindow) {
       const weekday = weekdayOf(b.booking_date);
       // Shared court math: splits a past-midnight booking across two days.
-      const segments = courtHourSegments(b).map((sg) => ({
-        weekday: (weekday + sg.dayOffset) % 7,
-        from: sg.from,
-        to: sg.to,
-        courts: sg.n,
-      }));
+      // Segments come in business-day minutes (360 … 1800); the day-part
+      // windows below are clock hours, so fold anything past midnight back
+      // onto 0–360 — it stays on the booking's own (business) weekday.
+      const segments = courtHourSegments(b).flatMap((sg) => {
+        const weekdayOf = (weekday + sg.dayOffset) % 7;
+        const out: {
+          weekday: number;
+          from: number;
+          to: number;
+          courts: number;
+        }[] = [];
+        if (sg.from < 1440)
+          out.push({
+            weekday: weekdayOf,
+            from: sg.from,
+            to: Math.min(sg.to, 1440),
+            courts: sg.n,
+          });
+        if (sg.to > 1440)
+          out.push({
+            weekday: weekdayOf,
+            from: Math.max(sg.from, 1440) - 1440,
+            to: sg.to - 1440,
+            courts: sg.n,
+          });
+        return out;
+      });
 
       for (const seg of segments) {
         for (const part of DAY_PARTS) {

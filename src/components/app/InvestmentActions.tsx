@@ -157,7 +157,7 @@ export function InvestmentActions({
               // opening WhatsApp with the receipt text.
               try {
                 const doc = investmentReceiptDoc(r);
-                const url = whatsappUrl(receiptText(doc), null);
+                const url = whatsappUrl(receiptText(doc, "whatsapp"), null);
                 const res = await shareReceipt(
                   doc,
                   url,

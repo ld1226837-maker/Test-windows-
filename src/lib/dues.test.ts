@@ -229,7 +229,10 @@ describe("snack sales", () => {
 
   it("labels tab, merged, and cancelled state — cancelled wins over a stale payment_mode", () => {
     expect(saleStateLabel(sale())).toBeNull();
-    expect(saleStateLabel(sale({ payment_mode: "On tab" }))).toBe("On tab");
+    expect(saleStateLabel(sale({ payment_mode: "On tab" }))).toBe("Pending");
+    expect(saleStateLabel(sale({ payment_mode: "On tab" }), null, 1100)).toBe(
+      "Pending Rs 1,100",
+    );
     expect(saleStateLabel(sale({ merged_into_bill_id: "b1" }), "INV-9")).toBe(
       "Merged into INV-9",
     );
@@ -240,7 +243,8 @@ describe("snack sales", () => {
     const entries = [
       entry({ ref_type: TAB_REF_TURF_BOOKING, ref_id: "k1", amount: 800 }),
     ];
-    expect(bookingStateLabel(booking(), entries)).toBe("On tab");
+    // owed money is the Pending badge, not a second "On tab" chip
+    expect(bookingStateLabel(booking(), entries)).toBeNull();
     expect(
       bookingStateLabel(booking({ merged_into_bill_id: "b1" }), [], "INV-9"),
     ).toBe("Merged into INV-9");

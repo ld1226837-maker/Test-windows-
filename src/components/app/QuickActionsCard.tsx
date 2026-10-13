@@ -1,7 +1,7 @@
 import {
-  Banknote,
   CalendarPlus,
   Cookie,
+  FileText,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -26,12 +26,7 @@ const ACTIONS: { id: string; tab: string; label: string; icon: LucideIcon }[] =
       icon: CalendarPlus,
     },
     { id: "sell-snacks", tab: "snacks", label: "Sell snacks", icon: Cookie },
-    {
-      id: "collect-payment",
-      tab: "dues",
-      label: "Collect payment",
-      icon: Banknote,
-    },
+    { id: "invoices", tab: "bills", label: "Invoices", icon: FileText },
     { id: "add-expense", tab: "money", label: "Add expense", icon: Wallet },
   ];
 

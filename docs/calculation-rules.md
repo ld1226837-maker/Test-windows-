@@ -512,6 +512,29 @@ A row with `turf_amount === 0` is legacy and is rebuilt everywhere as:
 booking tax/dues and analytics must use the same `storedTurfAmount()` rule;
 there is no second legacy formula.
 
+### Pending merged bill (generate with nothing paid)
+
+A merged invoice never needs money to exist. The dialog's "Generate bill as"
+choice maps to `MergeInput.dueMode`:
+
+- `"pending"` (customer pays later): the bill is written with
+  `amount_paid` = money REALLY collected on the sources (0 when none),
+  `status` `unpaid` when that is 0 and `partial` when something was collected
+  (never `paid` unless the sources already cover the total), and
+  `payment_mode` null. The remaining due lives ONLY on the bill, so
+  `billDue()` carries it and Outstanding, the Dashboard and Reports
+  (`periodStats().dues`) each count it once. Any amount a source had put on the
+  customer's tab is pulled off it by the existing `merge_reverse` rows.
+- `"paid"`: the same write, after which the dialog records the money received
+  now through `collectBillPayment` (normal payment rows, Cash/UPI split).
+  Entering nothing is refused; choose Pending instead.
+- `putOnTab` is the legacy switch (one charge on the running tab); it is
+  ignored when `dueMode` is given and the dialog no longer offers it.
+
+The merged bill's customer is `resolveMergeCustomer`: typed name/phone win; a
+blank part comes from the FIRST picked record (name and phone from the same
+record); no name anywhere becomes `Walk-in customer`.
+
 ### Merged-bill line items
 
 A merged turf line must satisfy `qty × rate = total`. `qty` is court-hours
@@ -599,3 +622,161 @@ logic is non-trivial:
    Confirm the total doesn't include the cancelled booking, doesn't
    double-count the merged one, and dues reflect only what's actually
    outstanding.
+
+## Turf slot booking intervals and midnight boundaries
+
+New turf bookings support only 30-minute and 60-minute intervals. The slot-duration settings and picker must not offer 15-minute or 45-minute intervals. Existing legacy records with other durations remain readable and must not be silently rewritten.
+
+### Business day: 6 AM – 6 AM
+
+The turf's day runs from 6 AM to 6 AM the next morning. **12 AM – 6 AM always belongs to the PREVIOUS date**: a 2 AM booking made for Saturday night is stored with `booking_date` = Saturday and `start_time` "2 AM". Everything that attributes a booking to a date — the slot picker, the slot guard, the calendar, dashboard, reports, revenue and utilisation — uses `booking_date` as the business date, so a night that runs past midnight never splits across two dates.
+
+- Minutes inside a business day are counted from 6 AM: 6 AM = 360, 12 AM = 1440, 2 AM = 1560, 6 AM next morning = 1800 (`businessMinutes()` in `time-slot-utils.ts`). A stored start before 6 AM is read as `1440 + start`.
+- Before 6 AM the app's "today" is still yesterday (`businessDateOf()`).
+- Picker tabs run Morning, Afternoon, Evening, Night, Late Night. Late Night (12–6 AM) is the last tab and belongs to the date being booked.
+- Intervals are half-open `[start, end)`: a booking ending at 8 PM does not occupy the slot beginning at 8 PM. `parseMinutes("12 AM")` returns 0 for display strings, so an end at or before the start means the following clock day (+1440). A booking can start from 6 AM and end no later than 6 AM next morning.
+- One-time upgrade (Dexie v20, and restore of any backup older than v20): every booking that starts between 12 AM and 5:59 AM is moved to the previous date. Rows starting at 6 AM or later are untouched.
+
+How the picker builds a booking (`src/lib/slot-selection.ts`, used by both `TurfTab` and `TimeSlotPicker`):
+
+- The first tap is the start slot; the second tap is the END boundary (exclusive). Tapping 6 PM then 8 PM books 6–8 PM (2 hr). A slot that is itself booked can still be tapped as the end, because the end is exclusive.
+- The selection is always contiguous, so `hours = slots × interval / 60` and `end_time = minuteLabel(last slot + interval)`. Tapping a selected slot makes it the new end (tapping the first slot clears).
+- The earliest start is 6 AM and the latest end is 6 AM the next morning. 12 AM is an ordinary slot (the first Late Night slot). A range that would cross a booked slot is refused and the selection is left unchanged.
+- Day parts (6–12, 12–16, 16–20, 20–24, then 24–30 = Late Night) are all whole-hour blocks, so both the 30- and 60-minute grids tile them exactly and 12 AM / 6 AM always land on the grid.
+- Editing reconstructs slots in business-day minutes (an 11 PM–1 AM booking keeps its 12–1 AM slot at 1440; a 2 AM booking sits at 1560); a legacy booking whose start or length is not on the 30/60 grid is not guessed at — the operator re-picks the time.
+
+## Merged bill: Snacks block and "Snacks paid" line (display only)
+
+No calculation changed. Grand total, Paid and Balance due still come from `billGrossTotal` / `billPaidAmount` (`lib/biz.ts`) and `lib/dues.ts`. `mergedBillBreakdown()` (`src/lib/merge-breakdown.ts`) only splits the already-computed Paid for printing:
+
+- **Advance paid** = the turf booking advance collected at merge time (never includes snack money), capped so Advance + Snacks paid never exceeds Paid.
+- **Snacks paid** = collected part of the merged snack bills, printed as a negative line; omitted when 0 (snack bill unpaid / on tab — its amount simply stays inside Balance due).
+- Print order: turf line(s), `Snacks — <item>` lines (sub-line shows the snack bill no.), Offer / Discount, Advance paid, Snacks paid.
+- `mergeIntoBill` stores `merged_breakdown` on the bill (not indexed, so no Dexie bump; travels with the bill row in backups). Bills saved before it existed have none and print exactly as before.
+
+## One cancelled model, one refund model (bills, snacks, invoices)
+
+**Cancelled** has exactly one meaning, defined in `src/lib/record-state.ts`
+and re-exported by `src/lib/bill-state.ts` (`isCancelled`, `isLive`): turf
+status `Cancelled` **or `No-show`**, snack sale `cancelled === true`, bill
+status `cancelled`. No screen, report, export or WhatsApp text compares status
+strings itself. A No-show therefore gets the same treatment as a Cancelled
+booking in dues, revenue, the Reports cancelled count, the calendar (the slot
+frees) and the refund rules below.
+
+**Pending** = a live, un-merged record with money still owed
+(`pendingAmount` / `isPending`): its unpaid balance plus anything moved onto
+the customer's tab against it. It is a per-record display figure; totals still
+come from `customerOutstanding` / `periodStats`, which never add a tab charge
+twice. The one wording is `pendingLabel` -> `Pending Rs 1,100`.
+
+**Refund model.** Turf bookings, invoices and snack sales share the optional
+fields `is_refundable`, `refunded_at`, `refund_mode` (plus `refund_amount` on
+bills/sales). Cancelling a record that already received money asks the owner:
+
+- **Refund**: paid back now. `is_refundable = true`, `refunded_at = now`,
+  `refund_mode` Cash/UPI. A drawer outflow dated that day (Cash only), never
+  income.
+- **Keep**: forfeited. `is_refundable = false`; counted as income on the day it
+  arrived (`billForfeitedRevenue`, `saleForfeitedRevenue`).
+
+`is_refundable` UNSET means a record cancelled before this model existed and
+holds nothing (exactly how cancelled bills/sales always counted), so old data
+and backups keep their numbers. Payment rows of a cancelled record are never
+deleted. Money on a merged source lives on its bill, never on the source.
+`drawerCashOn()` in analytics.ts is the one drawer formula (cash collected,
+less cash expenses, less cash refunds across all three kinds).
+
+**Refund timeline (F-DRAWER, fixed).** A cancelled record's receipt stays in
+the Cash/UPI split on the day it ARRIVED, whether it is still owed back, kept
+or already refunded; the refund is a separate Cash outflow on the day it was
+PAID BACK. So cash received and refunded the same day nets the drawer to 0,
+and received on day 1 / refunded on day 2 reads +X then -X. `collected`
+therefore means money received before refunds; refunds appear in the drawer.
+The one exception is a live bill moved back to unpaid: its receipts are
+removed, so that refund records `refund_amount` for audit but adds no drawer
+outflow (the cash already left that day's count).
+
+**Cancelling an invoice** (`cancelInvoice`, `previewCancelInvoice`,
+`cancelInvoiceEffects` in merge.ts). A merged invoice asks:
+
+- _Cancel invoice only_: the turf and snack bills come back as separate live
+  bills with their own money; tab due that the merge had reversed returns to
+  the tab. No refund question (the sources keep their money).
+- _Cancel invoice and its turf and snack bills_: sources are cancelled, snack
+  stock is restored, the invoice's own tab charge is reversed, and money
+  already received follows the refund-or-keep choice, applied once on the
+  invoice (never per source).
+
+**Voiding a snack sale** (`voidSnackSale`, cancel-flows.ts): stock restored; a
+charge it left on the customer's tab is reversed on the SAME tab (a sale used
+to be un-voidable while on the tab); money received follows refund-or-keep.
+Invoice and snack voids invalidate the same list (`VOID_QUERY_KEYS`).
+
+**Marking a bill unpaid after payments** is refused unless the owner refunds
+the received amount (`updateBillStatus`): it is recorded as `refund_amount` /
+`refunded_at` / `refund_mode` on the bill and shows as a drawer outflow; the
+old receipts are then removed so a later payment does not pile onto stale rows.
+A second refund on the same bill is refused.
+
+## Pending everywhere (Phase 3)
+
+- **One badge, one wording.** Money still owed reads `Pending Rs X`
+  (`pendingLabel`) in Turf, Snacks, Bills, Customers, Outstanding and the
+  dues card (`paymentStateLabel`, `saleStateLabel`). A booking whose balance is
+  on the tab shows only that badge (no second "On tab" chip). Printed
+  statements and WhatsApp bill text keep their established
+  "Remaining to be paid" line label.
+- **One-tap merge from Outstanding** (`mergePendingForCustomer`): a customer
+  with a live turf booking that owes money AND a live snack bill still owed on
+  the tab gets a merge button; it creates ONE pending invoice (`dueMode
+"pending"`). Records that owe nothing are never pulled in; snack sales are
+  matched to the customer by the tab their charge was posted to.
+- **Collecting on a merged invoice** (`collectBillPayment`): the payment is
+  recorded on the invoice (counted once in the split and drawer) and mirrored
+  onto the source turf bookings (oldest first, up to what each owes) with the
+  same amounts, modes and day. Bookings stay excluded from totals while
+  merged, so nothing is counted twice. Snack bills are not mirrored (a sale is
+  paid or on the tab, with no part-paid state). Money the bookings cannot carry
+  stays on the invoice only, and "cancel invoice only" is refused while such
+  money exists - cancel the invoice and its bills and choose refund or keep.
+- `periodStats().dues` is the turf + bill part of what is owed; the running
+  tab (including snack bills on the tab) is the rest. The Dashboard dues card
+  and Outstanding both use the customer-outstanding total.
+
+## Phase 4 - suite consistency rules
+
+- **Total pending money** = `pendingMoneyIndex()` (dues.ts): per customer, running
+  tab (clamped at 0) + live bookings' `bookingDue` + live bills' `billDue`.
+  Identities come from saved customers, open tabs, owners of pending
+  bookings/bills and any tab key. The Outstanding screen lists its rows and the
+  Dashboard "Pending dues" card uses its total, so they always agree. The
+  Dashboard "Collect now" list and age buckets show bill/turf rows only; the
+  card states the running-tab remainder separately (`list + tab remainder =
+  total`).
+- `periodStats().dues` stays a per-period bill + turf figure and EXCLUDES
+  running-tab money. Do not compare it with the Outstanding total; compare
+  `pendingMoneyIndex().total - dues` with the tab part.
+- **Exports**: a bill's Balance/Status cells come from `billExportStatus()`
+  (bill-export.ts): Balance = `billDue` (net of money moved to a tab, 0 when
+  cancelled); Status = Cancelled / Pending / Paid. A snack sale row carries a
+  Status column and a voided sale exports Amount = 0 and Profit = 0
+  (`snackExportLine`, snack-export.ts), so a SUM over the sheet matches Reports.
+- **Dates**: day keys and file-name stamps are IST (`localDateStr`); never
+  `toISOString().slice(0, 10)` (guarded by a test).
+- **Cancelled / no-show** are decided only through bill-state helpers (guarded
+  by a test; allowlist: load-test generators, the remaining-summary input flag,
+  a status chip's colour in TurfTab).
+- **Cache**: creating a snack sale refreshes `payments` (split + drawer).
+
+### Phase 4 decisions (final, confirmed by the owner)
+
+1. **Bills Excel Status wording is fixed** as Cancelled / Pending / Paid
+   (`billExportStatus()`). The old stored words (unpaid / partial / paid /
+   cancelled) are no longer exported; do not restore them.
+2. **Reports "Dues" is final as a per-period bill + turf figure** that excludes
+   running-tab money. The tab total is shown separately, so Reports Dues plus the
+   tab part equals the Outstanding total. Do not add tabs into period reports.
+3. **Running-tab rows on the Dashboard are display and reminder only.** The
+   "Collect now" list and the age buckets stay bill/turf rows; the dues card
+   states the tab remainder in text. Do not add collect actions for tab rows.

@@ -95,7 +95,7 @@ export function ExpenseActions({ e }: { e: ExpenseReceiptSource }) {
             const doc = expenseReceiptDoc(e);
             const res = await shareReceipt(
               doc,
-              whatsappUrl(receiptText(doc), null),
+              whatsappUrl(receiptText(doc, "whatsapp"), null),
               undefined,
               INVOICE_SECTIONS.expenses,
             );

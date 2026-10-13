@@ -45,6 +45,12 @@ const p = (
 /* ------------------------------------------------------------------ */
 
 export const SECTION_PARTS: Record<string, PartDef[]> = {
+  "settings.whatsapp": [
+    p("settings.whatsapp.owner-number", "Owner WhatsApp number", "field", true),
+    p("settings.whatsapp.daily-summary", "Daily summary button", "action"),
+    p("settings.whatsapp.recent-sort", "Recent bills: days and sort", "row"),
+    p("settings.whatsapp.recent-bills", "Recent bills list", "list"),
+  ],
   "home.calendar": [
     p("home.calendar.widget", "Calendar widget", "panel", true),
   ],
@@ -74,7 +80,7 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
     p("turf.new-booking.extras", "Discount & notes", "action"),
     p("turf.new-booking.grand-total", "Grand total (auto)", "summary", true),
     p("turf.new-booking.advance", "Advance paid"),
-    p("turf.new-booking.balance", "Balance due (auto)", "summary"),
+    p("turf.new-booking.balance", "Remaining to be paid (auto)", "summary"),
     p("turf.new-booking.payment-mode", "Payment mode"),
     p("turf.new-booking.status", "Status"),
     p("turf.new-booking.repeat", "Repeat weekly"),
@@ -88,11 +94,23 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
   "turf.pending-dues": [
     p("turf.pending-dues.heading", "Heading & total", "summary"),
     p("turf.pending-dues.list", "Dues list", "list", true),
+    p("turf.pending-dues.pay-cash", "Dues card: Paid · Cash button", "action"),
+    p("turf.pending-dues.pay-upi", "Dues card: Paid · UPI button", "action"),
+    p(
+      "turf.pending-dues.pay-split",
+      "Dues card: Split cash + online",
+      "action",
+    ),
+    p("turf.pending-dues.pay-part", "Dues card: Part payment box", "action"),
   ],
   "turf.bookings": [
     p("turf.bookings.heading", "Heading", "summary"),
     p("turf.bookings.toolbar", "Search, sort & export", "row"),
     p("turf.bookings.list", "Bookings list", "list", true),
+    p("turf.bookings.pay-cash", "Booking card: Paid · Cash button", "action"),
+    p("turf.bookings.pay-upi", "Booking card: Paid · UPI button", "action"),
+    p("turf.bookings.pay-split", "Booking card: Split cash + online", "action"),
+    p("turf.bookings.pay-part", "Booking card: Part payment box", "action"),
   ],
 
   /* --------------------------- Snacks --------------------------- */
@@ -324,6 +342,41 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
     ],
   },
   {
+    surfaceId: "surface.cancel-invoice",
+    label: "Cancel invoice pop-up",
+    parts: [
+      p("surface.cancel-invoice.summary", "Invoice summary", "summary"),
+      p(
+        "surface.cancel-invoice.scope",
+        "Cancel invoice only / with its bills",
+        "field",
+        true,
+      ),
+      p(
+        "surface.cancel-invoice.effects",
+        "What each choice does",
+        "summary",
+        true,
+      ),
+      p(
+        "surface.cancel-invoice.money",
+        "Refund or keep the money received",
+        "field",
+        true,
+      ),
+      p("surface.cancel-invoice.actions", "Confirm button", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.money-decision",
+    label: "Refund or keep pop-up",
+    parts: [
+      p("surface.money-decision.summary", "What is being cancelled", "summary"),
+      p("surface.money-decision.choice", "Refund or keep", "field", true),
+      p("surface.money-decision.actions", "Confirm button", "action", true),
+    ],
+  },
+  {
     surfaceId: "surface.merge-bill",
     label: "Merge into one bill pop-up",
     parts: [
@@ -336,11 +389,37 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
         true,
       ),
       p(
-        "surface.merge-bill.preview",
-        "Due-tab option & total preview",
+        "surface.merge-bill.warning",
+        "Mixed-customer warning",
+        "summary",
+        true,
+      ),
+      p(
+        "surface.merge-bill.due-mode",
+        "Pending / paid choice & payment",
+        "field",
+        true,
+      ),
+      p("surface.merge-bill.preview", "Total & due preview", "summary"),
+      p("surface.merge-bill.actions", "Generate bill button", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.turf-pay-confirm",
+    label: "Turf quick-pay confirm pop-up",
+    parts: [
+      p(
+        "surface.turf-pay-confirm.summary",
+        "Booking, amount & mode",
+        "summary",
+        true,
+      ),
+      p(
+        "surface.turf-pay-confirm.due-after",
+        "Due after this payment",
         "summary",
       ),
-      p("surface.merge-bill.actions", "Generate bill button", "action", true),
+      p("surface.turf-pay-confirm.actions", "Cancel & confirm", "action", true),
     ],
   },
   {

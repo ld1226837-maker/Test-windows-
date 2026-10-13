@@ -1,8 +1,11 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   ChevronLeft,
   ChevronRight,
   HandCoins,
+  Merge,
   Receipt,
   Search,
 } from "lucide-react";
@@ -15,11 +18,14 @@ import { SectionHeading } from "@/components/app/SectionHeading";
 import { NewDueCard } from "@/components/app/NewDueCard";
 import { CustomerDetailDialog } from "./CustomerDetailDialog";
 import { formatDMY, money } from "@/lib/biz";
-import { customerOutstandingIndex } from "@/lib/dues";
+import { pendingLabel } from "@/lib/bill-state";
+import { mergePendingForCustomer } from "@/lib/merge";
+import { errorMessage } from "@/lib/utils";
+import { pendingMoneyIndex } from "@/lib/dues";
 import { sumRupees } from "@/lib/money";
 import { useBills, useCustomers } from "@/lib/data";
 import { useTurfBookings } from "@/lib/ops";
-import { tabKey, useTabEntries, useTabSummaries } from "@/lib/tabs";
+import { useTabEntries, useTabSummaries } from "@/lib/tabs";
 import { compareBy, useSortState, type SortOption } from "@/lib/sort";
 import { SortMenu } from "./SortMenu";
 import { localDateStr } from "@/lib/utils";
@@ -45,6 +51,8 @@ type OutstandingRow = {
   total: number;
   itemCount: number;
   oldest: string | null;
+  /** A pending turf booking AND a tab-owed (snack) line: one tap can merge them. */
+  canMerge: boolean;
 };
 
 /** "8 days" style age of the oldest still-open item, for the summary line. */
@@ -69,6 +77,8 @@ export function OutstandingTab() {
   const { data: bookings = [] } = useTurfBookings();
   const { data: tabEntries = [] } = useTabEntries();
   const tabSummaries = useTabSummaries();
+  const qc = useQueryClient();
+  const [merging, setMerging] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [openCustomer, setOpenCustomer] = useState<{
     name: string;
@@ -86,52 +96,72 @@ export function OutstandingTab() {
   const deferredQ = useDeferredValue(q.trim().toLowerCase());
 
   const rows = useMemo(() => {
-    // One identity per customer_key: every saved customer, PLUS any walk-in
-    // who only exists as a running tab (never saved as a contact) — the same
-    // coverage the old open-tabs list had, now widened to booking/bill dues.
-    const identities = new Map<
-      string,
-      { name: string; phone: string | null }
-    >();
-    for (const c of customers) {
-      identities.set(tabKey(c.name, c.phone ?? null), {
-        name: c.name,
-        phone: c.phone ?? null,
-      });
-    }
-    for (const [key, summary] of tabSummaries) {
-      if (identities.has(key)) continue;
-      const name = summary.tab?.customer_name;
-      if (!name) continue;
-      identities.set(key, { name, phone: summary.tab?.phone ?? null });
-    }
-
-    const identityList = [...identities.values()];
-    const duesByKey = customerOutstandingIndex(identityList, {
+    // The same function the Dashboard "Pending dues" card totals with, so the
+    // two screens cannot disagree (lib/dues.ts pendingMoneyIndex).
+    const tabs = [...tabSummaries.values()].flatMap((s) =>
+      s.tab
+        ? [
+            {
+              customer_key: s.tab.customer_key,
+              customer_name: s.tab.customer_name,
+              phone: s.tab.phone,
+            },
+          ]
+        : [],
+    );
+    const { rows: owing } = pendingMoneyIndex({
+      customers,
+      tabs,
       bills,
       bookings,
       tabEntries,
     });
-    const list: OutstandingRow[] = [];
-    for (const [key, who] of identities) {
-      const dues = duesByKey.get(key);
-      if (!dues) continue;
-      if (dues.total <= 0) continue;
-      const oldest = dues.lines.reduce<string | null>((min, l) => {
+    return owing.map<OutstandingRow>((o) => {
+      const oldest = o.dues.lines.reduce<string | null>((min, l) => {
         if (!l.date) return min;
         return !min || l.date < min ? l.date : min;
       }, null);
-      list.push({
-        key,
-        name: who.name,
-        phone: who.phone,
-        total: dues.total,
-        itemCount: dues.lines.length,
+      return {
+        key: o.key,
+        name: o.name,
+        phone: o.phone,
+        total: o.dues.total,
+        itemCount: o.dues.lines.length,
         oldest,
-      });
-    }
-    return list;
+        canMerge:
+          o.dues.lines.some((l) => l.kind === "booking") &&
+          o.dues.lines.some((l) => l.kind === "tab"),
+      };
+    });
   }, [customers, bills, bookings, tabEntries, tabSummaries]);
+
+  // One tap: the customer's pending turf booking + pending snack bill become a
+  // single PENDING invoice (nothing is collected, the due moves onto the bill).
+  const mergeOne = async (r: OutstandingRow) => {
+    setMerging(r.key);
+    try {
+      const bill = await mergePendingForCustomer({
+        name: r.name,
+        phone: r.phone,
+      });
+      for (const key of [
+        "bills",
+        "turf_bookings",
+        "snack_sales",
+        "tab_entries",
+        "customer_tabs",
+        "payments",
+      ])
+        qc.invalidateQueries({ queryKey: [key] });
+      toast.success(
+        `Merged into ${bill.invoice_no} · ${pendingLabel(r.total)}`,
+      );
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setMerging(null);
+    }
+  };
 
   const filtered = useMemo(() => {
     const term = deferredQ;
@@ -276,31 +306,52 @@ export function OutstandingTab() {
                         </p>
                       ) : (
                         pageRows.map((r) => (
-                          <button
+                          <div
                             key={r.key}
-                            type="button"
-                            className="frost-soft lift flex w-full items-center justify-between gap-3 rounded-2xl border p-3.5 text-left"
-                            onClick={() =>
-                              setOpenCustomer({ name: r.name, phone: r.phone })
-                            }
+                            className="frost-soft lift flex w-full items-center gap-2 rounded-2xl border p-3.5"
                           >
-                            <div className="min-w-0">
-                              <p className="truncate font-medium underline decoration-dotted underline-offset-2">
-                                {r.name}
-                              </p>
-                              <p className="break-words text-xs text-muted-foreground">
-                                {r.phone ? `${r.phone} · ` : ""}
-                                {r.itemCount} item{r.itemCount === 1 ? "" : "s"}
-                                {r.oldest
-                                  ? ` · oldest ${ageLabel(r.oldest)}`
-                                  : ""}
-                                {r.oldest ? ` (${formatDMY(r.oldest)})` : ""}
-                              </p>
-                            </div>
-                            <Badge variant="destructive" className="shrink-0">
-                              {money(r.total)}
-                            </Badge>
-                          </button>
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+                              onClick={() =>
+                                setOpenCustomer({
+                                  name: r.name,
+                                  phone: r.phone,
+                                })
+                              }
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate font-medium underline decoration-dotted underline-offset-2">
+                                  {r.name}
+                                </p>
+                                <p className="break-words text-xs text-muted-foreground">
+                                  {r.phone ? `${r.phone} · ` : ""}
+                                  {r.itemCount} item
+                                  {r.itemCount === 1 ? "" : "s"}
+                                  {r.oldest
+                                    ? ` · oldest ${ageLabel(r.oldest)}`
+                                    : ""}
+                                  {r.oldest ? ` (${formatDMY(r.oldest)})` : ""}
+                                </p>
+                              </div>
+                              <Badge variant="destructive" className="shrink-0">
+                                {pendingLabel(r.total)}
+                              </Badge>
+                            </button>
+                            {r.canMerge && (
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="size-11 shrink-0"
+                                aria-label={`Merge ${r.name}'s turf booking and snack bill into one bill`}
+                                title="Merge turf + snacks into one bill"
+                                disabled={merging !== null}
+                                onClick={() => mergeOne(r)}
+                              >
+                                <Merge className="size-5" />
+                              </Button>
+                            )}
+                          </div>
                         ))
                       )}
                     </CardContent>

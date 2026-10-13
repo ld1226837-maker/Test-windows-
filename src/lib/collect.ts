@@ -52,7 +52,7 @@ export async function collectBillPayment(input: {
   const due = billDue(bill, input.tabEntries ?? []);
   const total = assertCollectable(entries, due);
   const settled = total >= rupees(due);
-  return recordPayment({
+  const result = await recordPayment({
     parentType: "bill",
     parentId: bill.id,
     entries,
@@ -62,6 +62,74 @@ export async function collectBillPayment(input: {
       payment_mode: primaryMode(entries),
     },
   });
+  await mirrorPaymentToMergedBookings(bill.id, entries, input.receivedAt);
+  return result;
+}
+
+/**
+ * A payment collected on a MERGED invoice is also written to the turf
+ * bookings it was built from (oldest first, up to what each still owes), with
+ * the same amounts, modes and day. The bookings stay excluded from every total
+ * while merged (their money lives on the invoice), so the Cash/UPI split and
+ * the drawer still count it exactly once - but if the invoice is later
+ * cancelled "invoice only" the bookings come back already carrying what was
+ * paid, instead of the money disappearing with the invoice's receipts.
+ *
+ * Snack bills are not mirrored: a sale is either paid or on the tab (it has no
+ * partial state), and flipping it would clash with the tab charge un-merge
+ * restores. Money beyond the bookings stays on the invoice only; cancelling
+ * the invoice "only" is refused while such money exists (see lib/merge.ts).
+ */
+export async function mirrorPaymentToMergedBookings(
+  billId: string,
+  entries: PaymentEntry[],
+  receivedAt?: string,
+) {
+  const bookings = await db.turf_bookings
+    .where("merged_into_bill_id")
+    .equals(billId)
+    .toArray();
+  if (bookings.length === 0) return;
+  const pool = entries
+    .map((e) => ({ amount: rupees(e.amount), mode: e.mode }))
+    .filter((e) => e.amount > 0);
+  const take = (n: number) => {
+    const out: PaymentEntry[] = [];
+    let need = n;
+    for (const p of pool) {
+      if (need <= 0) break;
+      const part = Math.min(p.amount, need);
+      if (part <= 0) continue;
+      out.push({ amount: part, mode: p.mode });
+      p.amount -= part;
+      need -= part;
+    }
+    return out;
+  };
+  const ordered = [...bookings].sort((a, b) =>
+    a.booking_date.localeCompare(b.booking_date),
+  );
+  for (const b of ordered) {
+    const advance = rupees(b.advance_paid);
+    const owes = Math.max(
+      0,
+      rupees(bookingGrossTotal(b as unknown as TurfBooking)) - advance,
+    );
+    if (owes <= 0) continue;
+    const part = take(owes);
+    if (part.length === 0) break;
+    await recordPayment({
+      parentType: "turf_booking",
+      parentId: b.id,
+      entries: part,
+      ...(receivedAt ? { receivedAt } : {}),
+      impliedAmount: advance,
+      parentPatch: {
+        advance_paid: advance + sum(part),
+        payment_mode: primaryMode(part),
+      },
+    });
+  }
 }
 
 /** Collects `entries` against a turf booking. `markCompleted` also flips a
@@ -163,6 +231,7 @@ export function useCollectBillPayment() {
     mutationFn: collectBillPayment,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bills"] });
+      qc.invalidateQueries({ queryKey: ["turf_bookings"] });
       qc.invalidateQueries({ queryKey: ["payments"] });
     },
   });
@@ -185,6 +254,7 @@ export function useSettleBill() {
     mutationFn: settleBill,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bills"] });
+      qc.invalidateQueries({ queryKey: ["turf_bookings"] });
       qc.invalidateQueries({ queryKey: ["payments"] });
     },
   });

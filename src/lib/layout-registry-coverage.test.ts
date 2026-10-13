@@ -37,6 +37,14 @@ describe("layout registry covers what the tabs render", () => {
     expect(partIds.has("money.add-expense.payment-mode")).toBe(true);
     expect(partIds.has("investments.summary.list")).toBe(true);
     expect(partIds.has("investments.summary.total")).toBe(true);
+    // Owner WhatsApp card: recent-bills dropdown, sort bar and sender.
+    for (const id of [
+      "settings.whatsapp.owner-number",
+      "settings.whatsapp.daily-summary",
+      "settings.whatsapp.recent-sort",
+      "settings.whatsapp.recent-bills",
+    ])
+      expect(partIds.has(id)).toBe(true);
   });
   it("every pop-up surface that renders parts is registered, with all its parts", () => {
     const surfaces = new Map(
@@ -142,6 +150,43 @@ describe("layout registry covers what the tabs render", () => {
       expect(
         locked("surface.scan-confirm", "surface.scan-confirm.details"),
       ).toBe(true);
+    });
+  });
+  describe("turf quick-pay buttons and confirm pop-up are registered", () => {
+    const partIds = new Set(
+      Object.values(SECTION_PARTS).flatMap((l) => l.map((x) => x.id)),
+    );
+    it("the four booking-card buttons are parts of turf.bookings", () => {
+      for (const id of [
+        "turf.bookings.pay-cash",
+        "turf.bookings.pay-upi",
+        "turf.bookings.pay-split",
+        "turf.bookings.pay-part",
+      ]) {
+        expect(partIds.has(id)).toBe(true);
+        // wired in QuickPayRow.tsx (ids are passed to its <Slot>)
+        expect(SRC.includes(`"${id}"`)).toBe(true);
+      }
+    });
+    it("the same four buttons are parts of turf.pending-dues", () => {
+      for (const id of [
+        "turf.pending-dues.pay-cash",
+        "turf.pending-dues.pay-upi",
+        "turf.pending-dues.pay-split",
+        "turf.pending-dues.pay-part",
+      ]) {
+        expect(partIds.has(id)).toBe(true);
+        expect(SRC.includes(`"${id}"`)).toBe(true);
+      }
+    });
+    it("the confirm pop-up is a registered surface whose actions can't be hidden", () => {
+      const sf = SURFACE_REGISTRY.find(
+        (x) => x.surfaceId === "surface.turf-pay-confirm",
+      );
+      expect(sf).toBeDefined();
+      const part = (id: string) => sf?.parts.find((x) => x.id === id);
+      expect(part("surface.turf-pay-confirm.summary")?.locked).toBe(true);
+      expect(part("surface.turf-pay-confirm.actions")?.locked).toBe(true);
     });
   });
 });

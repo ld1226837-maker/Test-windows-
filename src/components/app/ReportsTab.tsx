@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -36,7 +37,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { formatDMY, money, whatsappUrl } from "@/lib/biz";
+import {
+  balanceOf,
+  billGrossTotal,
+  formatDMY,
+  money,
+  whatsappUrl,
+} from "@/lib/biz";
 import { exportToExcel, exportWorkbook } from "@/lib/xlsx";
 import { INVOICE_SECTIONS } from "@/lib/desktop";
 import { buildDashboardSheet } from "@/lib/dashboard-xlsx";
@@ -78,12 +85,30 @@ import {
   turfOccupancy,
   type Sources,
 } from "@/lib/analytics";
+import { billExportStatus } from "@/lib/bill-export";
 import { activeTaxes, readAppSettings } from "@/lib/settings";
-import { bookingCashCollected, bookingDue, isFinancialSale } from "@/lib/dues";
+import {
+  billCollected,
+  bookingCashCollected,
+  bookingDue,
+  isFinancialSale,
+  snackSaleCollected,
+} from "@/lib/dues";
+import {
+  PAYMENT_MODE_MONEY_COLUMNS,
+  buildPaymentModeLookup,
+  mergedModeColumns,
+} from "@/lib/payment-columns";
 import { useTabEntries } from "@/lib/tabs";
 import { bookingGrossTotal, bookingTaxable } from "@/lib/biz";
 import { moneyAxis, rupees } from "@/lib/money";
 import { receiptModeLabel } from "@/lib/payments";
+import {
+  groupBookingPayments,
+  TURF_EXPORT_MONEY_COLUMNS,
+  turfBookingExportColumns,
+  turfPaymentsSheetRows,
+} from "@/lib/turf-payments";
 import {
   compareBy,
   sortSuffix,
@@ -360,6 +385,126 @@ export function ReportsTab() {
 
   const appSettings = useMemo(() => readAppSettings(), []);
   const taxesActive = useMemo(() => activeTaxes(appSettings), [appSettings]);
+
+  // ---- Excel sheets that carry Cash / Online / split payment columns ----
+  // Same payment rows the Dashboard split uses (lib/payment-columns.ts).
+  const billModes = useMemo(
+    () =>
+      buildPaymentModeLookup(
+        "bill",
+        bills
+          .filter((b) => isLive(b))
+          .map((b) => ({
+            id: b.id,
+            collected: billCollected(b, appSettings),
+            mode: b.payment_mode ?? null,
+            date: b.bill_date,
+          })),
+        payments,
+      ),
+    [bills, payments, appSettings],
+  );
+  const saleModes = useMemo(
+    () =>
+      buildPaymentModeLookup(
+        "snack_sale",
+        sales.map((x) => ({
+          id: x.id,
+          collected: snackSaleCollected(x, appSettings),
+          mode: x.payment_mode ?? null,
+          date: x.sale_date,
+        })),
+        payments,
+      ),
+    [sales, payments, appSettings],
+  );
+  /** Bill ids that own merged turf bookings / snack sales. */
+  const billMergeCounts = useMemo(() => {
+    const m = new Map<string, { turf: number; snacks: number }>();
+    const bump = (id: string, k: "turf" | "snacks") => {
+      const cur = m.get(id) ?? { turf: 0, snacks: 0 };
+      cur[k] += 1;
+      m.set(id, cur);
+    };
+    for (const b of bookings)
+      if (b.merged_into_bill_id) bump(b.merged_into_bill_id, "turf");
+    for (const x of sales)
+      if (x.merged_into_bill_id) bump(x.merged_into_bill_id, "snacks");
+    return m;
+  }, [bookings, sales]);
+
+  const snackSalesSheet = () => ({
+    name: "Snack sales",
+    autofilter: true,
+    moneyColumns: [
+      "Unit price",
+      "Amount",
+      "Profit",
+      ...PAYMENT_MODE_MONEY_COLUMNS,
+    ],
+    rows: sales.flatMap((s) => {
+      const modes = saleModes(s.id);
+      // A sale merged into a bill keeps its money on the bill: the numbers
+      // stay 0 (no double count), the text still says how it was paid.
+      const cols = s.merged_into_bill_id ? mergedModeColumns(modes) : modes;
+      return (s.items ?? []).map((it, i) => ({
+        "Bill No": s.bill_no,
+        Date: formatDMY(s.sale_date),
+        Customer: s.customer_name ?? "",
+        Item: it.item_name,
+        Qty: it.qty,
+        "Unit price": it.unit_price,
+        // A sale rolled into a merged bill is no longer its own
+        // financial record (isFinancialSale) — its revenue is on the
+        // bill now, so a plain SUM() over this column would
+        // double-count it, same reason "Turf bookings" zeroes
+        // Amount for a merged booking.
+        Amount: isFinancialSale(s) ? it.amount : 0,
+        Profit: isFinancialSale(s) ? it.amount - it.qty * it.cost_price : 0,
+        "Payment mode": receiptModeLabel("snack_sale", s.id, s.payment_mode),
+        // Mirrors the Turf bookings sheet's "Status" column — a snack sale
+        // has no multi-value status of its own, just sold vs. voided (see
+        // SnackSale.cancelled in ops.ts).
+        Status: isCancelled(s) ? "Cancelled" : "",
+        "Merged into bill": s.merged_into_bill_id ? "Yes — see Bills" : "No",
+        // Money only on a sale's first item row so a SUM never repeats it.
+        "Paid - Cash": i === 0 ? cols["Paid - Cash"] : 0,
+        "Paid - Online": i === 0 ? cols["Paid - Online"] : 0,
+        "Payment type": cols["Payment type"],
+        "Split detail": cols["Split detail"],
+      }));
+    }),
+  });
+
+  const billsSheet = () => ({
+    name: "Bills",
+    autofilter: true,
+    moneyColumns: [
+      "Subtotal",
+      "Total",
+      "Paid",
+      "Balance",
+      ...PAYMENT_MODE_MONEY_COLUMNS,
+    ],
+    rows: bills.map((b) => {
+      const merged = billMergeCounts.get(b.id);
+      return {
+        Invoice: b.invoice_no,
+        Date: formatDMY(b.bill_date),
+        Customer: b.customer_name,
+        Phone: b.customer_phone ?? "",
+        Subtotal: Number(b.subtotal) || 0,
+        Total: billGrossTotal(b),
+        ...billExportStatus(b, tabEntries),
+        // A merged bill is the one place its turf bookings' and snack
+        // sales' money now lives, so its Cash / Online / split is here.
+        "Merged bill": merged ? "Yes" : "No",
+        "Merged turf bookings": merged?.turf ?? 0,
+        "Merged snack sales": merged?.snacks ?? 0,
+        ...billModes(b.id),
+      };
+    }),
+  });
   const taxRows = useMemo(
     () =>
       taxesActive.length > 0
@@ -551,6 +696,7 @@ export function ReportsTab() {
         isCurrency: false,
       },
     ];
+    const byBooking = groupBookingPayments(payments);
     exportWorkbook(
       [
         {
@@ -729,17 +875,27 @@ export function ReportsTab() {
         {
           name: "Outstanding dues",
           autofilter: true,
-          moneyColumns: ["Total", "Paid", "Due"],
-          rows: dues.map((b) => ({
-            "Booking ID": b.booking_no,
-            Date: formatDMY(b.booking_date),
-            Customer: b.customer_name,
-            Phone: b.phone ?? "",
-            Total: b.gross,
-            Paid: b.paid,
-            Due: b.due,
-            "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
-          })),
+          moneyColumns: ["Total", "Paid", "Due", "Remaining collected"],
+          rows: dues.map((b) => {
+            const extra = turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            );
+            return {
+              "Booking ID": b.booking_no,
+              Date: formatDMY(b.booking_date),
+              Customer: b.customer_name,
+              Phone: b.phone ?? "",
+              Total: b.gross,
+              Paid: b.paid,
+              Due: b.due,
+              "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
+              "Booking type": extra["Booking type"] ?? "",
+              "Remaining collected": extra["Remaining collected"] ?? 0,
+              "Remaining status": extra["Remaining status"] ?? "",
+            };
+          }),
         },
         // Raw record-level sheets — every row currently loaded (the app's
         // active year window, not just the selected report month), so an
@@ -753,8 +909,9 @@ export function ReportsTab() {
             "Amount",
             "Tax",
             "Total",
-            "Advance paid",
+            "Total paid so far",
             "Balance due",
+            ...TURF_EXPORT_MONEY_COLUMNS,
           ],
           rows: bookings.map((b) => ({
             "Booking ID": b.booking_no,
@@ -778,7 +935,7 @@ export function ReportsTab() {
             // Real cash taken (bookingCashCollected), not the stored
             // advance_paid — a balance moved to the customer's tab would
             // otherwise show here AND again as a dues collection.
-            "Advance paid": isFinancialBooking(b)
+            "Total paid so far": isFinancialBooking(b)
               ? bookingCashCollected(b, tabEntries)
               : 0,
             "Balance due": bookingDue(b, tabEntries),
@@ -791,44 +948,23 @@ export function ReportsTab() {
             "Merged into bill": b.merged_into_bill_id
               ? "Yes — see Bills"
               : "No",
+            // Advance vs remaining collected, and the Cash / Online / split
+            // pay figures — appended after the original columns.
+            ...turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            ),
           })),
         },
         {
-          name: "Snack sales",
+          name: "Turf payments",
           autofilter: true,
-          moneyColumns: ["Unit price", "Amount", "Profit"],
-          rows: sales.flatMap((s) =>
-            (s.items ?? []).map((it) => ({
-              "Bill No": s.bill_no,
-              Date: formatDMY(s.sale_date),
-              Customer: s.customer_name ?? "",
-              Item: it.item_name,
-              Qty: it.qty,
-              "Unit price": it.unit_price,
-              // A sale rolled into a merged bill is no longer its own
-              // financial record (isFinancialSale) — its revenue is on the
-              // bill now, so a plain SUM() over this column would
-              // double-count it, same reason "Turf bookings" above zeroes
-              // Amount for a merged booking.
-              Amount: isFinancialSale(s) ? it.amount : 0,
-              Profit: isFinancialSale(s)
-                ? it.amount - it.qty * it.cost_price
-                : 0,
-              "Payment mode": receiptModeLabel(
-                "snack_sale",
-                s.id,
-                s.payment_mode,
-              ),
-              // Mirrors the Turf bookings sheet's "Status" column above —
-              // a snack sale has no multi-value status of its own, just
-              // sold vs. voided (see SnackSale.cancelled in ops.ts).
-              Status: s.cancelled ? "Cancelled" : "",
-              "Merged into bill": s.merged_into_bill_id
-                ? "Yes — see Bills"
-                : "No",
-            })),
-          ),
+          moneyColumns: ["Amount"],
+          rows: turfPaymentsSheetRows(bookings, byBooking, tabEntries),
         },
+        snackSalesSheet(),
+        billsSheet(),
         {
           name: "Expenses (raw)",
           autofilter: true,
@@ -955,6 +1091,7 @@ export function ReportsTab() {
       caption: "All time",
     });
 
+    const byBooking = groupBookingPayments(payments);
     await exportWorkbook(
       [
         {
@@ -1157,17 +1294,27 @@ export function ReportsTab() {
         {
           name: "Outstanding dues",
           autofilter: true,
-          moneyColumns: ["Total", "Paid", "Due"],
-          rows: dues.map((b) => ({
-            "Booking ID": b.booking_no,
-            Date: formatDMY(b.booking_date),
-            Customer: b.customer_name,
-            Phone: b.phone ?? "",
-            Total: b.gross,
-            Paid: b.paid,
-            Due: b.due,
-            "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
-          })),
+          moneyColumns: ["Total", "Paid", "Due", "Remaining collected"],
+          rows: dues.map((b) => {
+            const extra = turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            );
+            return {
+              "Booking ID": b.booking_no,
+              Date: formatDMY(b.booking_date),
+              Customer: b.customer_name,
+              Phone: b.phone ?? "",
+              Total: b.gross,
+              Paid: b.paid,
+              Due: b.due,
+              "Age bucket": AGE_BUCKET_META[ageBucket(b.booking_date)],
+              "Booking type": extra["Booking type"] ?? "",
+              "Remaining collected": extra["Remaining collected"] ?? 0,
+              "Remaining status": extra["Remaining status"] ?? "",
+            };
+          }),
         },
         // Raw record-level sheets — these are already every row currently
         // loaded (not month-filtered) in the month-scoped export above too,
@@ -1180,8 +1327,9 @@ export function ReportsTab() {
             "Amount",
             "Tax",
             "Total",
-            "Advance paid",
+            "Total paid so far",
             "Balance due",
+            ...TURF_EXPORT_MONEY_COLUMNS,
           ],
           rows: bookings.map((b) => ({
             "Booking ID": b.booking_no,
@@ -1196,7 +1344,7 @@ export function ReportsTab() {
               ? bookingGrossTotal(b) - bookingTaxable(b)
               : 0,
             Total: isFinancialBooking(b) ? bookingGrossTotal(b) : 0,
-            "Advance paid": isFinancialBooking(b)
+            "Total paid so far": isFinancialBooking(b)
               ? bookingCashCollected(b, tabEntries)
               : 0,
             "Balance due": bookingDue(b, tabEntries),
@@ -1209,44 +1357,23 @@ export function ReportsTab() {
             "Merged into bill": b.merged_into_bill_id
               ? "Yes — see Bills"
               : "No",
+            // Advance vs remaining collected, and the Cash / Online / split
+            // pay figures — appended after the original columns.
+            ...turfBookingExportColumns(
+              b,
+              byBooking.get(b.id) ?? [],
+              tabEntries,
+            ),
           })),
         },
         {
-          name: "Snack sales",
+          name: "Turf payments",
           autofilter: true,
-          moneyColumns: ["Unit price", "Amount", "Profit"],
-          rows: sales.flatMap((s) =>
-            (s.items ?? []).map((it) => ({
-              "Bill No": s.bill_no,
-              Date: formatDMY(s.sale_date),
-              Customer: s.customer_name ?? "",
-              Item: it.item_name,
-              Qty: it.qty,
-              "Unit price": it.unit_price,
-              // A sale rolled into a merged bill is no longer its own
-              // financial record (isFinancialSale) — its revenue is on the
-              // bill now, so a plain SUM() over this column would
-              // double-count it, same reason "Turf bookings" above zeroes
-              // Amount for a merged booking.
-              Amount: isFinancialSale(s) ? it.amount : 0,
-              Profit: isFinancialSale(s)
-                ? it.amount - it.qty * it.cost_price
-                : 0,
-              "Payment mode": receiptModeLabel(
-                "snack_sale",
-                s.id,
-                s.payment_mode,
-              ),
-              // Mirrors the Turf bookings sheet's "Status" column above —
-              // a snack sale has no multi-value status of its own, just
-              // sold vs. voided (see SnackSale.cancelled in ops.ts).
-              Status: s.cancelled ? "Cancelled" : "",
-              "Merged into bill": s.merged_into_bill_id
-                ? "Yes — see Bills"
-                : "No",
-            })),
-          ),
+          moneyColumns: ["Amount"],
+          rows: turfPaymentsSheetRows(bookings, byBooking, tabEntries),
         },
+        snackSalesSheet(),
+        billsSheet(),
         {
           name: "Expenses (raw)",
           autofilter: true,

@@ -30,6 +30,7 @@ export type DuesFocusBucket = {
  */
 export function DuesFocusCard({
   total,
+  tabDue = 0,
   buckets,
   topDebtors,
   cashCollected,
@@ -37,6 +38,8 @@ export function DuesFocusCard({
   onRemind,
 }: {
   total: number;
+  /** Part of `total` that is only on running tabs (not in the buckets). */
+  tabDue?: number;
   buckets: DuesFocusBucket[];
   topDebtors: DuesFocusRow[];
   cashCollected: number;
@@ -47,7 +50,7 @@ export function DuesFocusCard({
     <section className="space-y-3">
       <SectionHeading
         eyebrow="MONEY OWED"
-        title="Money owed to me"
+        title="Pending money"
         hint="Oldest money first"
         icon={AlertCircle}
       />
@@ -63,7 +66,9 @@ export function DuesFocusCard({
               {money(total)}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Total outstanding across bills and turf bookings.
+              Total pending across bills, snacks and turf bookings.
+              {tabDue > 0 &&
+                ` Includes ${money(tabDue)} on running tabs (collect it on the Outstanding screen).`}
             </p>
           </div>
 

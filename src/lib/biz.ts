@@ -1,4 +1,6 @@
+import { isCancelled } from "./record-state";
 import { waMeUrl } from "./phone";
+import type { MergedBreakdown } from "./merge-breakdown";
 import { money, rupees } from "./money";
 import { storedTurfAmount } from "@/lib/courts";
 import { readAppSettings, taxBreakdown } from "./settings";
@@ -91,7 +93,26 @@ export type Bill = {
   tax_lines?: { label: string; value: number }[];
   amount_paid: number;
   status: BillStatus;
+  /**
+   * Refund model, shared with turf bookings. Set when this record is
+   * cancelled/voided AFTER money was received (or when a paid bill is moved
+   * back to unpaid): `true` = the money is owed back to the customer (a
+   * liability, never revenue); `false` = the owner keeps it (forfeited, counted
+   * as income when it arrived). UNSET on every legacy cancelled record means
+   * "nothing was kept", exactly how cancelled bills/sales always behaved, so
+   * old data and backups load with unchanged numbers.
+   */
+  is_refundable?: boolean;
+  /** When the refund was paid back (drawer outflow is dated by this day). */
+  refunded_at?: string | null;
+  /** Mode the refund was paid in; a refund with no mode counts as Cash. */
+  refund_mode?: "Cash" | "UPI" | null;
+  /** Amount refunded when it is not simply "everything held" (a paid bill moved
+   * back to unpaid). Unset = the whole held amount. */
+  refund_amount?: number;
   payment_mode?: string | null;
+  /** Display-only split of a merged bill; see lib/merge-breakdown.ts. */
+  merged_breakdown?: MergedBreakdown | null;
   bill_date: string;
 };
 
@@ -177,7 +198,19 @@ export function historyEntryText(entry: HistoryEntry) {
   ].join("\n");
 }
 
-export function billText(bill: Bill) {
+/** Extra lines the printed bill carries that the plain-text bill adds when
+ * given (see billShareText in receipt.ts): the "Payable after advances" row,
+ * the rows after "Paid" (Remaining, Mode with the full split) and the
+ * payment note. Without it the text is exactly as before. */
+export type BillTextExtras = {
+  payable?: { label: string; value: string } | null;
+  afterPaid?: { label: string; value: string }[];
+  note?: string | null | undefined;
+  /** "Advance collected" value, e.g. "Rs 500 via UPI". */
+  advance?: string | null | undefined;
+};
+
+export function billText(bill: Bill, extras?: BillTextExtras) {
   const lines = bill.items.map(
     (r) =>
       `${r.item || "Item"} — ${r.qty} ${r.unit ?? "kg"} × ${money(r.rate)} = ${money(r.total)}`,
@@ -207,9 +240,14 @@ export function billText(bill: Bill) {
     bill.discount ? `Discount: -${money(bill.discount)}` : "",
     ...taxRows,
     `Payable: ${money(gross)}`,
+    extras?.payable ? `${extras.payable.label}: ${extras.payable.value}` : "",
+    extras?.advance ? `Advance collected: ${extras.advance}` : "",
     `Paid: ${money(paid)}`,
-    due > 0 ? `Balance due: ${money(due)}` : "",
+    ...(extras?.afterPaid
+      ? extras.afterPaid.map((r) => `${r.label}: ${r.value}`)
+      : [isCancelled(bill) ? "" : `Remaining to be paid: ${money(due)}`]),
     `Status: ${bill.status.toUpperCase()}`,
+    extras?.note ? `Note: ${extras.note}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -233,7 +271,7 @@ export async function copyText(text: string) {
 export function balanceOf(bill: Bill) {
   // Paid and cancelled bills both carry a zero live balance — a cancelled
   // bill is void, not unpaid (see BillStatus).
-  if (bill.status === "paid" || bill.status === "cancelled") return 0;
+  if (bill.status === "paid" || isCancelled(bill)) return 0;
   return Math.max(0, billGrossTotal(bill) - rupees(bill.amount_paid));
 }
 

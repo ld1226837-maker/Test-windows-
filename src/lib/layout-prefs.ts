@@ -83,11 +83,13 @@ const SETTINGS_ORDER_VERSION_KEY = "ks:settings-order-version";
  *  added `home.quick-actions`. */
 const SETTINGS_ORDER_VERSION = "8";
 /** Bump when the shipped *top-level* tab order changes (see `migrateNavOrder`).
+ *  v4: Invoices moved up into the bottom nav's four primary slots and
+ *  Outstanding moved into "More" (Home, Bookings, Sell, Invoices, Outstanding).
  *  v3: added the "customers" tab (promoted out of Settings' customer
  *  directory) right after Invoices. v2: Outstanding moved up next to
  *  Home/Bookings/Sell. */
 const NAV_ORDER_VERSION_KEY = "ks:nav-order-version";
-const NAV_ORDER_VERSION = "3";
+const NAV_ORDER_VERSION = "4";
 
 /** The tab that can never be hidden — it holds this very customization UI. */
 export const LOCKED_TAB_ID = "settings";
@@ -129,10 +131,10 @@ export type TabDef = {
  * Shipped tab order.
  *
  * Reordered so the four highest-frequency daily tasks — Home, Bookings
- * (Turf), Sell (Snacks) and Outstanding — are guaranteed to land inside the
- * Android bottom nav's first four slots (see `primaryMobileTabs` in
- * `routes/index.tsx`) by default, instead of Outstanding falling into the
- * "More" sheet. Labels renamed to match the task-first nav: "Turf" →
+ * (Turf), Sell (Snacks) and Invoices (Bills) — are guaranteed to land inside
+ * the Android bottom nav's first four slots (see `primaryMobileTabs` in
+ * `routes/index.tsx`) by default. Outstanding sits first inside the "More"
+ * sheet. Labels renamed to match the task-first nav: "Turf" →
  * "Bookings", "Snacks" → "Sell", "Bills" → "Invoices", "Money" → "Expenses".
  * Section ids are unchanged, so this never invalidates a stored per-section
  * preference. See also `migrateNavOrder` below, which re-seeds the top-level
@@ -213,15 +215,6 @@ export const LAYOUT_REGISTRY: TabDef[] = [
     ],
   },
   {
-    tabId: "dues",
-    label: "Outstanding",
-    sections: [
-      { id: "dues.summary", label: "Outstanding summary", kind: "stat" },
-      { id: "dues.new-due", label: "New due", kind: "form" },
-      { id: "dues.open-tabs", label: "Outstanding balances", kind: "list" },
-    ],
-  },
-  {
     tabId: "bills",
     label: "Invoices",
     sections: [
@@ -229,6 +222,15 @@ export const LAYOUT_REGISTRY: TabDef[] = [
       { id: "bills.search-filter", label: "Search & filter", kind: "form" },
       { id: "bills.ledger", label: "Pending by customer", kind: "table" },
       { id: "bills.list", label: "All bills", kind: "list" },
+    ],
+  },
+  {
+    tabId: "dues",
+    label: "Outstanding",
+    sections: [
+      { id: "dues.summary", label: "Outstanding summary", kind: "stat" },
+      { id: "dues.new-due", label: "New due", kind: "form" },
+      { id: "dues.open-tabs", label: "Outstanding balances", kind: "list" },
     ],
   },
   {

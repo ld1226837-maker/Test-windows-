@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import {
   cleanAmountInput,
   expenseCashPart,
@@ -5,6 +6,7 @@ import {
   rupees,
 } from "@/lib/money";
 import { useMemo, useState } from "react";
+import { businessDateOf, businessMinutes } from "@/lib/time-slot-utils";
 import {
   Bar,
   BarChart,
@@ -57,7 +59,7 @@ import {
   money,
   whatsappUrl,
 } from "@/lib/biz";
-import { billDue, bookingDue } from "@/lib/dues";
+import { billDue, bookingDue, pendingMoneyIndex } from "@/lib/dues";
 import { useTabEntries } from "@/lib/tabs";
 import { openWhatsApp } from "@/lib/contact";
 import { cn, errorMessage } from "@/lib/utils";
@@ -96,7 +98,7 @@ import {
   profitAndLoss,
   statsForMonth,
   type Sources,
-  cashRefundOutflowOn,
+  drawerCashOn,
 } from "@/lib/analytics";
 import { compareBy, useSortState, type SortOption } from "@/lib/sort";
 import { useDayCloses } from "@/lib/day-close";
@@ -245,15 +247,21 @@ export function DashboardTab() {
     // One canonical "still owed" figure — billDue()/bookingDue() from
     // dues.ts: frozen tax included, anything moved to the running tab
     // excluded — the same rupee the Bills/Turf/Dues tabs show.
-    const billsDue = bills.reduce((s, b) => s + billDue(b, tabEntries), 0);
-    const turfDue = bookings.reduce((s, b) => s + bookingDue(b, tabEntries), 0);
+    // Running-tab money (snack bills put "On tab", moved balances) is owed
+    // too, so the card totals through pendingMoneyIndex - the same function the
+    // Outstanding screen lists with - instead of bills + turf only.
+    const pending = pendingMoneyIndex({ bills, bookings, tabEntries });
     return {
-      totalDue: billsDue + turfDue,
+      totalDue: pending.total,
+      // The part of totalDue that sits only on running tabs. The "Collect now"
+      // list and age buckets show bill/turf rows; this is the remainder, so
+      // list + tabDue always equals the card total.
+      tabDue: pending.rows.reduce((n, r) => n + r.dues.tab, 0),
       // Event count, not money — a merged booking still happened today as
       // a visit, so it's intentionally NOT filtered through
       // isFinancialBooking here (only Cancelled is excluded).
       bookingsToday: bookings.filter(
-        (b) => isToday(b.booking_date) && b.status !== "Cancelled",
+        (b) => isToday(b.booking_date) && isLive(b),
       ).length,
       snackSalesToday: snackSales.filter((s) => isToday(s.sale_date)).length,
     };
@@ -266,27 +274,16 @@ export function DashboardTab() {
   // assumption this reconciliation always made, so old rows keep counting
   // exactly as they always did.
   const cashReconciliation = useMemo(() => {
-    const cashCollectedToday =
-      paymentSplit(src, (iso) => dayKey(iso) === today).find(
-        (p) => p.name === "Cash",
-      )?.value ?? 0;
-    const cashExpensesToday = expenses
-      .filter((e) => dayKey(e.spent_at) === today)
-      .reduce((s, e) => s + expenseCashPart(e), 0);
-    // K4: refundable advances that were paid back today leave the drawer.
-    const cashRefundsToday = cashRefundOutflowOn(
-      src.bookings,
-      src.tabEntries ?? [],
-      today,
-    );
+    // One shared formula (lib/analytics.ts drawerCashOn): cash collected,
+    // minus cash expenses, minus cash refunds - turf, invoices and snacks.
+    const d = drawerCashOn(src, today);
     return {
-      cashCollectedToday,
-      cashExpensesToday,
-      cashRefundsToday,
-      expectedInDrawer:
-        cashCollectedToday - cashExpensesToday - cashRefundsToday,
+      cashCollectedToday: d.cashCollected,
+      cashExpensesToday: d.cashExpenses,
+      cashRefundsToday: d.cashRefunds,
+      expectedInDrawer: d.expected,
     };
-  }, [src, expenses, today]);
+  }, [src, today]);
 
   // Today's close-out record, if the day has already been closed — used to
   // switch the cash-drawer card between "Close day" and "Edit closing".
@@ -310,22 +307,29 @@ export function DashboardTab() {
   // cancelled bookings are excluded; today's slots already under way (more
   // than a few minutes past their start time) are skipped too.
   const nextBookingInfo = useMemo(() => {
-    const tomorrow = dayKey(new Date(Date.now() + 86_400_000));
-    const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+    // The turf's day runs 6 AM -> 6 AM, so before 6 AM "today" is still
+    // yesterday's business date and 2 AM sorts AFTER 11 PM.
+    const bizToday = businessDateOf();
+    const tomorrow = businessDateOf(new Date(Date.now() + 86_400_000));
+    const nowMinutes = businessMinutes(
+      new Date().getHours() * 60 + new Date().getMinutes(),
+    );
     const candidates = bookings
-      .filter((b) => b.status !== "Cancelled" && b.status !== "Completed")
+      .filter((b) => isLive(b) && b.status !== "Completed")
       .map((b) => ({ b, bk: dayKey(b.booking_date) }))
-      .filter(({ bk }) => bk === today || bk === tomorrow)
+      .filter(({ bk }) => bk === bizToday || bk === tomorrow)
       .filter(({ b, bk }) => {
-        if (bk !== today) return true;
+        if (bk !== bizToday) return true;
         const start = clockMinutes(b.start_time);
-        return start === null || start >= nowMinutes - 15;
+        return start === null || businessMinutes(start) >= nowMinutes - 15;
       })
       .sort((x, y) => {
         if (x.bk !== y.bk) return x.bk < y.bk ? -1 : 1;
+        const sx = clockMinutes(x.b.start_time);
+        const sy = clockMinutes(y.b.start_time);
         return (
-          (clockMinutes(x.b.start_time) ?? 0) -
-          (clockMinutes(y.b.start_time) ?? 0)
+          (sx === null ? 0 : businessMinutes(sx)) -
+          (sy === null ? 0 : businessMinutes(sy))
         );
       });
     const next = candidates[0]?.b;
@@ -337,9 +341,9 @@ export function DashboardTab() {
     return {
       label: next.customer_name,
       sub: [next.slot_name, timeText].filter(Boolean).join(" · "),
-      whenText: candidates[0]!.bk === today ? "Today" : "Tomorrow",
+      whenText: candidates[0]!.bk === bizToday ? "Today" : "Tomorrow",
     };
-  }, [bookings, today]);
+  }, [bookings]);
 
   // "Unfinished" records: still marked Confirmed for a date that's already
   // passed without ever being marked Completed or Cancelled — i.e. a status
@@ -349,9 +353,10 @@ export function DashboardTab() {
   const staleBookingsCount = useMemo(
     () =>
       bookings.filter(
-        (b) => b.status === "Confirmed" && dayKey(b.booking_date) < today,
+        (b) =>
+          b.status === "Confirmed" && dayKey(b.booking_date) < businessDateOf(),
       ).length,
-    [bookings, today],
+    [bookings],
   );
 
   const daily = useMemo(() => {
@@ -929,7 +934,7 @@ export function DashboardTab() {
                 <HeroStat
                   label="Pending dues"
                   value={money(totals.totalDue)}
-                  hint={`${dueList.length} unpaid · bills + turf`}
+                  hint={`${dueList.length} unpaid · bills + turf + tabs`}
                   icon={AlertCircle}
                   tone={totals.totalDue > 0 ? "bad" : "primary"}
                 />
@@ -1133,6 +1138,7 @@ export function DashboardTab() {
         <LayoutSection id="home.dues-focus">
           <DuesFocusCard
             total={totals.totalDue}
+            tabDue={totals.tabDue}
             buckets={dueBuckets}
             topDebtors={topDebtors}
             cashCollected={collectedTodayByMode.cash}

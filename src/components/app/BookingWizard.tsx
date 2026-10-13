@@ -85,8 +85,6 @@ export function BookingWizard({
   discountValue,
   notes,
   onNotesChange,
-  repeatWeeks,
-  onRepeatWeeksChange,
   total,
   balance,
   onSubmit,
@@ -125,15 +123,11 @@ export function BookingWizard({
   discountValue: number;
   notes: string;
   onNotesChange: (v: string) => void;
-  repeatWeeks: number;
-  onRepeatWeeksChange: (n: number) => void;
   total: number;
   balance: number;
   onSubmit: () => void;
   submitting: boolean;
-  /** True while rescheduling an existing booking rather than creating one —
-   * swaps the submit button's label, drops the weekly-repeat option (a
-   * reschedule is always a single record), and shows a way back out. */
+  /** True while rescheduling an existing booking rather than creating one. */
   editing?: boolean;
   onCancelEdit?: () => void;
 }) {
@@ -290,9 +284,9 @@ export function BookingWizard({
               onClick={() => setExtrasExpanded(true)}
             >
               <Percent className="mr-2 h-4 w-4" />
-              {discountValue > 0 || notes || repeatWeeks > 1
-                ? "Edit discount, notes or repeat"
-                : "Add discount, notes or repeat weekly"}
+              {discountValue > 0 || notes
+                ? "Edit discount or notes"
+                : "Add discount or notes"}
             </Button>
           ) : (
             <div className="frost-soft space-y-3 rounded-xl border p-3">
@@ -317,32 +311,6 @@ export function BookingWizard({
                   placeholder="e.g. regular customer, rain reschedule"
                 />
               </div>
-              {!editing && (
-                <div className="space-y-1">
-                  <Label className="text-xs">Repeat weekly</Label>
-                  <Select
-                    value={String(repeatWeeks)}
-                    onValueChange={(v) => onRepeatWeeksChange(Number(v))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">One-time only</SelectItem>
-                      {[2, 3, 4, 6, 8, 12].map((n) => (
-                        <SelectItem key={n} value={String(n)}>
-                          Same slot for {n} weeks
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {editing && (
-                <p className="text-xs text-muted-foreground">
-                  Repeat isn't available while rescheduling an existing booking.
-                </p>
-              )}
             </div>
           )}
         </div>
@@ -508,7 +476,6 @@ export function BookingWizard({
             ) : (
               <>
                 <Plus className="mr-1 h-4 w-4" /> Confirm booking
-                {repeatWeeks > 1 ? ` × ${repeatWeeks} weeks` : ""}
               </>
             )}
           </Button>

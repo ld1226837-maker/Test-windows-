@@ -1,3 +1,6 @@
+import { isCancelled, isLive, pendingAmount } from "@/lib/bill-state";
+import { saleMoneyAtStake, useVoidSnackSale } from "@/lib/cancel-flows";
+import { MoneyDecisionDialog } from "./MoneyDecisionDialog";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -36,6 +39,7 @@ import { formatDMY, money, snackSaleGrossTotal } from "@/lib/biz";
 import { cleanAmountInput, rupees } from "@/lib/money";
 import { snackSaleReceipt } from "@/lib/receipt";
 import { INVOICE_SECTIONS } from "@/lib/desktop";
+import { snackExportLine } from "@/lib/snack-export";
 import { exportToExcel } from "@/lib/xlsx";
 import {
   SNACK_PAYMENT_MODES,
@@ -43,11 +47,20 @@ import {
   useDeleteSnackSale,
   useSnackSales,
   useUpdateSnackSale,
-  useVoidSnackSale,
 } from "@/lib/ops";
 import { useCorrectSnackSaleMode } from "@/lib/collect";
 import { advanceEntries } from "@/lib/split-payment";
-import { dueNoForRef, saleMovedToDues, saleStateLabel } from "@/lib/dues";
+import {
+  dueNoForRef,
+  saleMovedToDues,
+  saleStateLabel,
+  snackSaleCollected,
+} from "@/lib/dues";
+import {
+  buildPaymentModeLookup,
+  mergedModeColumns,
+} from "@/lib/payment-columns";
+import { readAppSettings } from "@/lib/settings";
 import { TAB_REF_SNACK_SALE, useTabEntries } from "@/lib/tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import {
@@ -85,6 +98,8 @@ export function SnackSalesList() {
   const { data: sales = [] } = useSnackSales();
   const del = useDeleteSnackSale();
   const voidSale = useVoidSnackSale();
+  // A paid sale being voided asks refund-or-keep first.
+  const [voidAsk, setVoidAsk] = useState<(typeof sales)[number] | null>(null);
   const update = useUpdateSnackSale();
   const correctMode = useCorrectSnackSaleMode();
   // Lightweight edit path (see PROGRESS-NOTES.md Step 40): fixes the common
@@ -180,22 +195,47 @@ export function SnackSalesList() {
     [dateFilteredSales, page],
   );
 
+  // Cash / Online / split for the Excel export, from the same payment rows
+  // the Dashboard split uses (see lib/payment-columns.ts).
+  const saleModes = useMemo(() => {
+    const settings = readAppSettings();
+    return buildPaymentModeLookup(
+      "snack_sale",
+      sales.map((s) => ({
+        id: s.id,
+        collected: snackSaleCollected(s, settings),
+        mode: s.payment_mode ?? null,
+        date: s.sale_date,
+      })),
+      payments,
+    );
+  }, [sales, payments]);
+
   const exportSales = () =>
     exportToExcel(
-      dateFilteredSales.flatMap((s) =>
-        s.items.map((it) => ({
+      dateFilteredSales.flatMap((s) => {
+        const modes = saleModes(s.id);
+        // A sale merged into a bill keeps its money on the bill: numbers 0,
+        // text still says how it was paid.
+        const cols = s.merged_into_bill_id ? mergedModeColumns(modes) : modes;
+        return s.items.map((it, i) => ({
           "Bill No": s.bill_no,
           Date: formatDMY(s.sale_date),
           Customer: s.customer_name ?? "",
           Item: it.item_name,
           Qty: it.qty,
           "Unit Price": it.unit_price,
-          Amount: it.amount,
-          Profit: rupees(it.amount - it.qty * it.cost_price),
+          ...snackExportLine(s, it),
           "Payment Mode": s.payment_mode,
+          // Money columns only on a sale's first item row, so a SUM over the
+          // sheet never counts a multi-item sale's payment more than once.
+          "Paid - Cash": i === 0 ? cols["Paid - Cash"] : 0,
+          "Paid - Online": i === 0 ? cols["Paid - Online"] : 0,
+          "Payment type": cols["Payment type"],
+          "Split detail": cols["Split detail"],
           Notes: s.notes ?? "",
-        })),
-      ),
+        }));
+      }),
       `snack-sales-${sortSuffix(sort.field, sort.dir)}`,
       "Snack Sales",
       INVOICE_SECTIONS.snacks,
@@ -300,7 +340,9 @@ export function SnackSalesList() {
                                     aria-label="Pay via UPI"
                                     onClick={() =>
                                       setQrFor({
-                                        amount: s.total + (s.tax_amount ?? 0),
+                                        amount: pendingAmount(s, {
+                                          tabEntries,
+                                        }),
                                         note: s.bill_no,
                                       })
                                     }
@@ -316,6 +358,7 @@ export function SnackSalesList() {
                                   s.merged_into_bill_id
                                     ? invoiceNoById.get(s.merged_into_bill_id)
                                     : null,
+                                  pendingAmount(s, { tabEntries }),
                                 );
                                 return (
                                   <>
@@ -332,8 +375,7 @@ export function SnackSalesList() {
                                           aria-label="Pay via UPI"
                                           onClick={() =>
                                             setQrFor({
-                                              amount:
-                                                s.total + (s.tax_amount ?? 0),
+                                              amount: snackSaleGrossTotal(s),
                                               note: s.bill_no,
                                             })
                                           }
@@ -426,32 +468,41 @@ export function SnackSalesList() {
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
-                          {!s.cancelled && (
-                            <ConfirmDeleteButton
-                              size="sm"
-                              // A merged sale's revenue now lives on its bill
-                              // (undo there — Bills tab Void/un-merge), and a
-                              // sale moved to dues has a live tab charge
-                              // referencing this row by id (lib/tabs.ts
-                              // TAB_REF_SNACK_SALE) that voiding doesn't
-                              // reverse — same guard the delete button below
-                              // already uses.
-                              className="text-muted-foreground"
-                              icon={Ban}
-                              disabled={!!s.merged_into_bill_id || moved}
-                              ariaLabel="Void snack bill"
-                              confirmLabel="Void snack bill"
-                              title={`Void snack bill ${s.bill_no}?`}
-                              description={`This cancels ${s.bill_no} for ${s.customer_name || "the customer"} — the sold items go back to stock and it stops counting toward revenue or dues. The record stays for history; this doesn't delete it.`}
-                              onConfirm={() =>
-                                voidSale.mutate(s.id, {
-                                  onSuccess: () =>
-                                    toast.success(`${s.bill_no} cancelled`),
-                                  onError: (e) => toast.error(errorMessage(e)),
-                                })
-                              }
-                            />
-                          )}
+                          {!isCancelled(s) &&
+                            (saleMoneyAtStake(s) > 0 ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-muted-foreground"
+                                aria-label="Void snack bill"
+                                disabled={!!s.merged_into_bill_id}
+                                onClick={() => setVoidAsk(s)}
+                              >
+                                <Ban className="h-4 w-4" />
+                              </Button>
+                            ) : (
+                              <ConfirmDeleteButton
+                                size="sm"
+                                // A merged sale's revenue lives on its bill
+                                // (undo there). A sale on the tab can now be
+                                // voided: its tab charge is reversed with it.
+                                className="text-muted-foreground"
+                                icon={Ban}
+                                disabled={!!s.merged_into_bill_id}
+                                ariaLabel="Void snack bill"
+                                confirmLabel="Void snack bill"
+                                title={`Void snack bill ${s.bill_no}?`}
+                                description={`This cancels ${s.bill_no} for ${s.customer_name || "the customer"} — the sold items go back to stock, any amount still on the customer's tab for it is removed, and it stops counting toward revenue or dues. The record stays for history; this doesn't delete it.`}
+                                onConfirm={() =>
+                                  voidSale.mutate(s.id, {
+                                    onSuccess: () =>
+                                      toast.success(`${s.bill_no} cancelled`),
+                                    onError: (e) =>
+                                      toast.error(errorMessage(e)),
+                                  })
+                                }
+                              />
+                            ))}
                           <ConfirmDeleteButton
                             size="sm"
                             // A merged sale's revenue now lives on its bill (undo
@@ -468,12 +519,13 @@ export function SnackSalesList() {
                             // or moved by definition, so it's always deletable
                             // here.
                             disabled={
-                              !s.cancelled && (!!s.merged_into_bill_id || moved)
+                              !isCancelled(s) &&
+                              (!!s.merged_into_bill_id || moved)
                             }
                             ariaLabel="Delete snack bill"
                             title={`Delete snack bill ${s.bill_no}?`}
                             description={
-                              s.cancelled
+                              isCancelled(s)
                                 ? `This permanently removes the cancelled record for ${s.bill_no} and can't be undone.`
                                 : `This permanently removes ${s.bill_no} (${money(s.total)}) and restores the sold items back to stock. This can't be undone.`
                             }
@@ -685,6 +737,29 @@ export function SnackSalesList() {
           amount={qrFor.amount}
         />
       )}
+      <MoneyDecisionDialog
+        open={voidAsk !== null}
+        onOpenChange={(o) => {
+          if (!o) setVoidAsk(null);
+        }}
+        title={`Void ${voidAsk?.bill_no ?? "snack bill"}?`}
+        intro="The sold items go back to stock. Money has already been received on this bill."
+        amount={voidAsk ? saleMoneyAtStake(voidAsk) : 0}
+        confirmLabel="Void snack bill"
+        busy={voidSale.isPending}
+        onConfirm={(money) => {
+          const sale = voidAsk;
+          if (!sale) return;
+          voidSale.mutate(
+            { id: sale.id, money },
+            {
+              onSuccess: () => toast.success(`${sale.bill_no} cancelled`),
+              onError: (e) => toast.error(errorMessage(e)),
+              onSettled: () => setVoidAsk(null),
+            },
+          );
+        }}
+      />
     </>
   );
 }

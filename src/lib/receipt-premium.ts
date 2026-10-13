@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { REMAINING_LABEL } from "./remaining-summary";
 import { rupees } from "./money";
 import type { ReceiptDoc } from "./receipt";
 import { paperInfo, paperWidthMm, type PrintSettings } from "./print";
@@ -598,12 +599,12 @@ function renderBoxed(
     };
     const grand = doc.totals.find((t) => t.strong);
     // Rows are printed in the order the document lists them: those before the
-    // strong total above the bar, those after it (Paid / Balance due / Mode)
+    // strong total above the bar, those after it (Paid / Remaining to be paid / Mode)
     // below it — previously every row was printed above the bar, so "Balance
     // due" appeared above the total it is calculated from.
     const grandIdx = grand ? doc.totals.indexOf(grand) : doc.totals.length;
     const visibleTotal = (t: (typeof doc.totals)[number]) =>
-      t !== grand && t.label !== "Status";
+      t !== grand && t.label !== "Status" && !t.printHide;
     const totalsBefore = doc.totals.slice(0, grandIdx).filter(visibleTotal);
     const totalsAfter = doc.totals.slice(grandIdx + 1).filter(visibleTotal);
     pdf.setFont("helvetica", "normal");
@@ -613,10 +614,11 @@ function renderBoxed(
       pdf.setFontSize(bodyFont * scale);
       for (const t of rows) {
         const isDiscount = t.value.trim().startsWith("-");
+        pdf.setFontSize(bodyFont * scale * (t.small ? 0.8 : 1));
         pdf.setTextColor(
-          isDiscount ? red[0] : 60,
-          isDiscount ? red[1] : 60,
-          isDiscount ? red[2] : 60,
+          isDiscount ? red[0] : t.small ? 110 : 60,
+          isDiscount ? red[1] : t.small ? 110 : 60,
+          isDiscount ? red[2] : t.small ? 110 : 60,
         );
         const value = shrinkToFit(t.value, Math.max(4, totalsW - 6));
         const valueW = pdf.getTextWidth(value);
@@ -666,7 +668,10 @@ function renderBoxed(
     // shared drawUpiPanel (receipt-upi.ts) so A4/A5/80mm/58mm all render the
     // identical amount-free "Scan & Pay" block.
     if (includeUpi && s.upiId.trim()) {
-      const balanceRow = doc.totals.find((t) => t.label === "Balance due");
+      const balanceRow =
+        (doc.balanceDue ?? 0) > 0
+          ? doc.totals.find((t) => t.label === REMAINING_LABEL)
+          : undefined;
       const hasBalance = !!balanceRow;
       const paidFlag = statusVal === "PAID";
       // A4 has room to spare, but A5's fixed sheet height (unlike the roll
@@ -777,7 +782,10 @@ function renderBoxed(
       // the fixed A5/A4 page has no remaining vertical capacity.
       pdf.addPage([width, pageH]);
       const paymentY = kind === "a4" ? 24 : 18;
-      const balanceRow = doc.totals.find((t) => t.label === "Balance due");
+      const balanceRow =
+        (doc.balanceDue ?? 0) > 0
+          ? doc.totals.find((t) => t.label === REMAINING_LABEL)
+          : undefined;
       const paidFlag = statusVal === "PAID";
       const panelH = drawUpiPanel(pdf, {
         amount: doc.balanceDue ?? null,
@@ -992,9 +1000,12 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
 
     const grand = doc.totals.find((t) => t.strong);
     for (const t of doc.totals) {
+      if (t.printHide) continue;
       const bold = t === grand;
       pdf.setFont("helvetica", bold ? "bold" : "normal");
-      pdf.setFontSize(bold ? bodyFont * 1.15 : bodyFont);
+      pdf.setFontSize(
+        bold ? bodyFont * 1.15 : t.small ? bodyFont * 0.8 : bodyFont,
+      );
       const value = fitTextToWidth(pdf, t.value, contentW * 0.48);
       const valueW = pdf.getTextWidth(value);
       pdf.text(
@@ -1007,11 +1018,12 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
         y,
       );
       pdf.text(value, width - marginX, y, { align: "right" });
-      y += (bold ? bodyFont * 1.15 : bodyFont) * 0.65;
+      y +=
+        (bold ? bodyFont * 1.15 : t.small ? bodyFont * 0.8 : bodyFont) * 0.65;
       if (bold) {
         pdf.setDrawColor(...RULE);
         pdf.line(marginX, y - 1, width - marginX, y - 1);
-        // Clear the rule before the next row (Paid / Balance due / Mode):
+        // Clear the rule before the next row (Paid / Remaining to be paid / Mode):
         // those rows used to be struck through by it on 50/58 mm rolls.
         y += 2.5;
       }
@@ -1036,7 +1048,10 @@ function renderCondensed(doc: ReceiptDoc, s: PrintSettings): jsPDF {
     // drawUpiPanel block the A4/A5/80mm layouts use (see renderBoxed above),
     // in its condensed "slim" variant.
     if (s.upiId.trim()) {
-      const balanceRow = doc.totals.find((t) => t.label === "Balance due");
+      const balanceRow =
+        (doc.balanceDue ?? 0) > 0
+          ? doc.totals.find((t) => t.label === REMAINING_LABEL)
+          : undefined;
       const statusVal = (
         doc.totals.find((t) => t.label === "Status")?.value || ""
       ).toUpperCase();

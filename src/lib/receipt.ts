@@ -1,3 +1,13 @@
+import { isCancelled } from "./record-state";
+import { receiptTabEntries } from "./receipt-tab";
+import { bookingCashCollected, netTabAmountFor } from "./dues";
+import { TAB_PAYMENT_MODE } from "./ops";
+import {
+  TAB_REF_BILL,
+  TAB_REF_SNACK_SALE,
+  TAB_REF_TURF_BOOKING,
+  type TabEntry,
+} from "./tabs";
 import { jsPDF } from "jspdf";
 import { courtsLabel, storedTurfAmount } from "@/lib/courts";
 import { toast } from "sonner";
@@ -37,8 +47,21 @@ import {
 } from "./print";
 import { printPdfBytesAsImages } from "./print-raster";
 import { buildPremiumReceiptPdf } from "./receipt-premium";
-import { receiptAdvanceAmount, receiptModeLabel } from "./payments";
+import {
+  receiptAdvanceAmount,
+  receiptModeLabel,
+  receiptPaymentRows,
+} from "./payments";
+import { modeBreakdown, modeBreakdownOf, modeLines } from "./payment-breakdown";
+import { mergedBillBreakdown } from "./merge-breakdown";
+import {
+  BALANCE_PAID_LABEL,
+  joinNotes,
+  pdfSafeText,
+  remainingSummary,
+} from "./remaining-summary";
 import { readAppSettings } from "./settings";
+import { buildShareText, type ShareStyle } from "./share-text";
 
 /** PDF-safe money: helvetica has no rupee glyph, and receipts drop paise.
  *  Handles negative amounts (used for the "Advance paid" / "Offer" line
@@ -69,7 +92,15 @@ export type ReceiptLine = {
    * place of `amount` when set. */
   amountText?: string;
 };
-export type ReceiptTotal = { label: string; value: string; strong?: boolean };
+export type ReceiptTotal = {
+  label: string;
+  value: string;
+  strong?: boolean;
+  /** Printed in a smaller, muted size (e.g. the Paid line under the total). */
+  small?: boolean;
+  /** Kept for the copy / WhatsApp text, but not printed on the bill. */
+  printHide?: boolean;
+};
 
 export type ReceiptDoc = {
   kind: string;
@@ -95,6 +126,11 @@ export type ReceiptDoc = {
    * No. block AND the item table (expense and investment documents are not
    * sales invoices), and only the `strong` totals row is printed below it. */
   details?: ReceiptTotal[];
+  /** Copy / WhatsApp text only (never printed): the advance taken up front,
+   * e.g. "Rs 500 via UPI". Printed receipts already show the advance line. */
+  textAdvance?: string | undefined;
+  /** Copy / WhatsApp text only: Mode with the amounts of a split. */
+  textMode?: string | undefined;
 };
 
 /** Line-height multipliers for the "compact / normal / relaxed" line-spacing
@@ -121,9 +157,12 @@ const DENSITY_SHADE: Record<PrintSettings["density"], number> = {
  * roll width) silently falls through to the classic renderer below, same as
  * if "classic" had been selected. */
 export function buildReceiptPdf(
-  doc: ReceiptDoc,
+  docIn: ReceiptDoc,
   s: PrintSettings = readPrintSettings(),
 ): jsPDF {
+  // Every printed text goes through the same rupee-sign swap, so no receipt
+  // type (bill, booking, payment, voucher, statement) can print "₹".
+  const doc = rupeeSafe(docIn);
   // The premium letterhead layouts are sales-invoice designs (Bill To card,
   // item table); voucher/statement documents use the classic renderer's
   // detail layout with the same logo/banner/shop header.
@@ -264,9 +303,9 @@ export function buildReceiptPdf(
       pdf.text(fitToWidth(text, width - marginX * 2), marginX, y);
       y += lineH - 0.6;
     };
-    const row = (l: string, r: string, bold = false) => {
+    const row = (l: string, r: string, bold = false, small = false) => {
       pdf.setFont("helvetica", bold ? "bold" : "normal");
-      pdf.setFontSize(bodyFont * scale);
+      pdf.setFontSize(bodyFont * scale * (small ? 0.8 : 1));
       // A long label (e.g. a custom tax name) could otherwise run straight
       // into the right-aligned value — clamp it to whatever room is actually
       // left once the value's own width is measured, same guard itemRow()
@@ -787,11 +826,12 @@ export function buildReceiptPdf(
       rule();
       // Status reads in capitals on every document type (bills store it in
       // lower case, bookings in title case), matching the premium badge.
-      for (const t of doc.totals)
+      for (const t of doc.totals.filter((x) => !x.printHide))
         row(
           t.label,
           t.label === "Status" ? t.value.toUpperCase() : t.value,
           t.strong,
+          t.small,
         );
     }
     if (doc.note) {
@@ -1220,7 +1260,66 @@ export async function shareReceipt(
 
 export { safeFilePart };
 
-export function billReceipt(bill: Bill): ReceiptDoc {
+/** Swaps the rupee sign (which the PDF fonts cannot draw) for "Rs " in every
+ * printed text of a document. Display only. */
+function rupeeSafe(doc: ReceiptDoc): ReceiptDoc {
+  return {
+    ...doc,
+    lines: doc.lines.map((l) => ({
+      ...l,
+      label: pdfSafeText(l.label),
+      ...(l.sub !== undefined ? { sub: pdfSafeText(l.sub) } : {}),
+      ...(l.amountText !== undefined
+        ? { amountText: pdfSafeText(l.amountText) }
+        : {}),
+    })),
+    totals: doc.totals.map((t) => ({
+      ...t,
+      label: pdfSafeText(t.label),
+      value: pdfSafeText(t.value),
+    })),
+    ...(doc.note ? { note: pdfSafeText(doc.note) } : {}),
+    ...(doc.details
+      ? {
+          details: doc.details.map((d) => ({
+            ...d,
+            label: pdfSafeText(d.label),
+            value: pdfSafeText(d.value),
+          })),
+        }
+      : {}),
+  };
+}
+
+// The optional ledger argument lets a caller that already holds the tab
+// entries pass them; otherwise the app-wide index (receipt-tab.ts) is used.
+export const billReceipt = (bill: Bill, tabEntries?: TabEntry[]): ReceiptDoc =>
+  rupeeSafe(billReceiptRaw(bill, tabEntries ?? receiptTabEntries()));
+export const bookingReceipt = (
+  b: TurfBooking,
+  tabEntries?: TabEntry[],
+): ReceiptDoc =>
+  rupeeSafe(bookingReceiptRaw(b, tabEntries ?? receiptTabEntries()));
+export const snackSaleReceipt = (
+  s: SnackSale,
+  tabEntries?: TabEntry[],
+): ReceiptDoc =>
+  rupeeSafe(snackSaleReceiptRaw(s, tabEntries ?? receiptTabEntries()));
+
+/** The printed status word: the SAME vocabulary the Bills screen and the
+ * Excel export use (Cancelled / Moved to dues / Pending / Paid), not the raw
+ * stored word. */
+function billPrintStatus(
+  cancelled: boolean,
+  movedToDues: boolean,
+  due: number,
+): string {
+  if (cancelled) return "CANCELLED";
+  if (movedToDues) return "MOVED TO DUES";
+  return due > 0 ? "PENDING" : "PAID";
+}
+
+function billReceiptRaw(bill: Bill, tabEntries?: TabEntry[]): ReceiptDoc {
   // Printed from the bill's own frozen tax snapshot, never recomputed at
   // print time, so a reprint after a rate change is byte-identical to the
   // copy the customer first received.
@@ -1228,7 +1327,70 @@ export function billReceipt(bill: Bill): ReceiptDoc {
   const grandTotal = billGrossTotal(bill);
   const taxAmount = grandTotal - rupees(bill.total);
   const paid = billPaidAmount(bill);
-  const due = Math.max(0, grandTotal - paid);
+  const ownDue = Math.max(0, grandTotal - paid);
+  // Money moved to the customer's running tab is owed THERE, not on this
+  // bill: the Bills screen shows it as "Moved to dues" with nothing due, so the
+  // printed / copied / WhatsApp bill must not demand it a second time. A bill
+  // saved "On tab" is wholly on the tab; otherwise it is whatever the ledger
+  // holds against this bill. Without a loaded ledger the record's own fields
+  // are all there is.
+  const cancelledBill = isCancelled(bill);
+  const onTabAmount = cancelledBill
+    ? 0
+    : (bill.payment_mode ?? "") === TAB_PAYMENT_MODE
+      ? ownDue
+      : Math.min(
+          ownDue,
+          tabEntries ? netTabAmountFor(tabEntries, TAB_REF_BILL, bill.id) : 0,
+        );
+  const due = cancelledBill ? 0 : Math.max(0, ownDue - onTabAmount);
+  const movedToDues = ownDue > 0 && onTabAmount > 0 && due === 0;
+  const merged = mergedBillBreakdown({
+    breakdown: bill.merged_breakdown,
+    paid,
+    grandTotal,
+    itemCount: bill.items.length,
+  });
+  // How the money on a MERGED bill was received (Cash / Online / split),
+  // from the payment rows copied onto the bill at merge time. Display only.
+  // Legacy merged bills (no stored breakdown) keep printing exactly as before.
+  const received = modeBreakdown(receiptPaymentRows("bill", bill.id));
+  const showReceived = Boolean(merged) && received.total > 0;
+  const turfPaid = modeBreakdownOf(bill.merged_breakdown?.turf_modes);
+  // Turf advance (first collection) vs the turf balance paid later, each with
+  // its own Cash / UPI split. Older merged bills only have `turf_modes` (all
+  // turf money together) and keep printing that way.
+  const turfFirst = modeBreakdownOf(bill.merged_breakdown?.turf_first_modes);
+  const turfAdvanceDetail = bill.merged_breakdown?.turf_first_modes
+    ? turfFirst.detail
+    : turfPaid.detail;
+  const turfBalanceModes = bill.merged_breakdown?.turf_balance_modes;
+  const turfBalanceDetail = turfBalanceModes
+    ? modeBreakdownOf(turfBalanceModes).detail
+    : "";
+  // Display only: what is left to pay after the advances, plus a payment note.
+  const remainingView = remainingSummary({
+    grandTotal,
+    advances: merged
+      ? merged.advancePaid + merged.snacksPaid
+      : paid
+        ? Math.min(paid, receiptAdvanceAmount("bill", bill.id, paid))
+        : 0,
+    paid,
+    fmt: pmoney,
+    cancelled: cancelledBill,
+    onTab: onTabAmount > 0,
+    onTabAmount,
+    payments: receiptPaymentRows("bill", bill.id),
+    fallbackMode: bill.payment_mode,
+    fallbackDate: bill.bill_date,
+    fmtDate: formatDMY,
+  });
+  const modeValue = showReceived
+    ? received.split
+      ? `Split (${received.modes.map((m) => m.mode).join(" + ")})`
+      : (received.modes[0]?.mode ?? "")
+    : (remainingView.modeLabel ?? bill.payment_mode);
   // Narrow thermal rolls get the abbreviated unit ("2.5 L" instead of
   // "2.5 litre") in the QTY column so the value never has to be clipped with
   // an ellipsis to fit. Sheets (A4/A5/Letter) have plenty of column width and
@@ -1240,32 +1402,90 @@ export function billReceipt(bill: Bill): ReceiptDoc {
     dateText: formatDMY(bill.bill_date),
     customer: bill.customer_name,
     phone: bill.customer_phone,
-    lines: [
-      ...bill.items.map((it) => ({
-        label: it.item || "Item",
-        sub: `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
-        qty: `${it.qty} ${it.unit ?? "kg"}`,
-        amount: it.total,
-      })),
-      // Itemized alongside the products, in addition to the totals block
-      // below, so offer/advance show as line entries on the printed bill.
-      ...(bill.discount
-        ? [{ label: "Offer / Discount", amount: -bill.discount }]
-        : []),
-      ...(paid
-        ? [
-            {
-              label: "Advance paid",
-              // Display only: the advance actually entered, not the running
-              // paid total (which becomes the full amount once settled).
-              amount: -Math.min(
-                paid,
-                receiptAdvanceAmount("bill", bill.id, paid),
-              ),
-            },
-          ]
-        : []),
-    ],
+    lines: merged
+      ? [
+          // Merged bill with a stored breakdown: turf line(s), then each snack
+          // bill's items under a "Snacks" label, then offer, turf advance and
+          // snacks paid. Display only — same grand total / paid / balance.
+          ...merged.groups.flatMap((g) =>
+            bill.items.slice(g.start, g.end).map((it) => ({
+              label:
+                g.kind === "snack"
+                  ? `Snacks \u2014 ${it.item || "Item"}`
+                  : it.item || "Item",
+              sub:
+                g.kind === "snack" && g.bill_no
+                  ? `${g.bill_no} \u00b7 ${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`
+                  : `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
+              qty: `${it.qty} ${it.unit ?? "kg"}`,
+              amount: it.total,
+            })),
+          ),
+          ...(bill.discount
+            ? [{ label: "Offer / Discount", amount: -bill.discount }]
+            : []),
+          ...(merged.advancePaid > 0
+            ? [
+                {
+                  label: "Advance paid",
+                  ...(turfAdvanceDetail ? { sub: turfAdvanceDetail } : {}),
+                  amount: -merged.advancePaid,
+                },
+              ]
+            : []),
+          ...(merged.turfBalancePaid > 0
+            ? [
+                {
+                  label: "Balance paid",
+                  ...(turfBalanceDetail ? { sub: turfBalanceDetail } : {}),
+                  amount: -merged.turfBalancePaid,
+                },
+              ]
+            : []),
+          ...(merged.snacksPaid > 0
+            ? [{ label: "Snacks paid", amount: -merged.snacksPaid }]
+            : []),
+        ]
+      : [
+          ...bill.items.map((it) => ({
+            label: it.item || "Item",
+            sub: `${it.qty} ${it.unit ?? "kg"} x ${pmoney(it.rate)}`,
+            qty: `${it.qty} ${it.unit ?? "kg"}`,
+            amount: it.total,
+          })),
+          // Itemized alongside the products, in addition to the totals block
+          // below, so offer/advance show as line entries on the printed bill.
+          ...(bill.discount
+            ? [{ label: "Offer / Discount", amount: -bill.discount }]
+            : []),
+          ...(paid
+            ? [
+                {
+                  label: "Advance paid",
+                  // Display only: the advance actually entered, not the running
+                  // paid total (which becomes the full amount once settled).
+                  ...(remainingView.advanceDetail
+                    ? { sub: remainingView.advanceDetail }
+                    : {}),
+                  amount: -Math.min(
+                    paid,
+                    receiptAdvanceAmount("bill", bill.id, paid),
+                  ),
+                },
+              ]
+            : []),
+          ...(remainingView.balancePaid > 0
+            ? [
+                {
+                  label: "Balance paid",
+                  ...(remainingView.balanceModeText
+                    ? { sub: remainingView.balanceModeText }
+                    : {}),
+                  amount: -remainingView.balancePaid,
+                },
+              ]
+            : []),
+        ],
     totals: [
       { label: "Subtotal", value: pmoney(bill.subtotal) },
       ...(bill.discount
@@ -1286,16 +1506,133 @@ export function billReceipt(bill: Bill): ReceiptDoc {
           ]
         : []),
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
-      { label: "Paid", value: pmoney(paid) },
-      ...(due > 0 ? [{ label: "Balance due", value: pmoney(due) }] : []),
-      ...(bill.payment_mode
-        ? [{ label: "Mode", value: bill.payment_mode }]
+      ...(remainingView.payableRow ? [remainingView.payableRow] : []),
+      ...(remainingView.balanceRow ? [remainingView.balanceRow] : []),
+      ...(merged && merged.turfBalancePaid > 0
+        ? [{ label: BALANCE_PAID_LABEL, value: pmoney(merged.turfBalancePaid) }]
         : []),
-      { label: "Status", value: bill.status.toUpperCase() },
+      { label: "Paid", value: pmoney(paid) },
+      ...remainingView.remainingRows,
+      // Merged bill: how the collected money arrived — Cash, Online and the
+      // split — plus the turf and per-snack-bill parts.
+      // When the turf money came in two stages, the advance and the balance
+      // print on their own lines above, so the combined "Split payment"
+      // amounts row (advance + balance + snacks added together) is left out.
+      ...(showReceived
+        ? modeLines(received, pmoney).filter(
+            (l) =>
+              !(
+                merged &&
+                merged.turfBalancePaid > 0 &&
+                l.label === "Split payment"
+              ),
+          )
+        : []),
+      ...(showReceived &&
+      turfPaid.total > 0 &&
+      !(merged && merged.turfBalancePaid > 0)
+        ? [{ label: "Turf paid", value: turfPaid.detail }]
+        : []),
+      ...(showReceived
+        ? (bill.merged_breakdown?.snacks ?? []).flatMap((sn) => {
+            const d = modeBreakdownOf(sn.modes);
+            return d.total > 0
+              ? [
+                  {
+                    label: `Snacks paid${sn.bill_no ? ` (${sn.bill_no})` : ""}`,
+                    value: d.detail,
+                  },
+                ]
+              : [];
+          })
+        : []),
+      ...(!merged && remainingView.balancePaid > 0
+        ? [
+            ...(remainingView.advanceModeText
+              ? [
+                  {
+                    label: "Advance mode",
+                    value: remainingView.advanceModeText,
+                  },
+                ]
+              : []),
+            ...(remainingView.balanceModeText
+              ? [
+                  {
+                    label: "Balance mode",
+                    value: remainingView.balanceModeText,
+                  },
+                ]
+              : []),
+          ]
+        : modeValue
+          ? [{ label: "Mode", value: modeValue }]
+          : []),
+      {
+        label: "Status",
+        value: billPrintStatus(cancelledBill, movedToDues, due),
+      },
     ],
+    note: remainingView.note,
+    textMode: showReceived && received.split ? received.split : undefined,
+    textAdvance: merged
+      ? merged.advancePaid > 0
+        ? `${pmoney(merged.advancePaid)}${turfAdvanceDetail ? ` (${turfAdvanceDetail})` : ""}`
+        : undefined
+      : (advanceCollectedText(
+          "bill",
+          bill.id,
+          paid
+            ? Math.min(paid, receiptAdvanceAmount("bill", bill.id, paid))
+            : 0,
+          bill.payment_mode,
+        ) ?? undefined),
     balanceDue: due,
     fileName: `${safeFilePart(bill.invoice_no)}-${safeFilePart(bill.customer_name, "customer")}`,
   };
+}
+
+/** "Rs 500 via UPI" / "Rs 500 (UPI Rs 300 + Cash Rs 200)" for the money taken
+ * up front, from the first receipt on file (a split is written within a
+ * second). Null when no advance was taken. Used by the copy / WhatsApp text. */
+function advanceCollectedText(
+  parentType: "bill" | "turf_booking",
+  parentId: string,
+  amount: number,
+  fallbackMode?: string | null,
+): string | null {
+  if (!(amount > 0)) return null;
+  const canon = (m: unknown) => {
+    const k = String(m ?? "")
+      .trim()
+      .toLowerCase();
+    return k === "upi" ? "UPI" : k === "card" ? "Card" : "Cash";
+  };
+  const rows = receiptPaymentRows(parentType, parentId)
+    .filter((r) => Number(r.amount) > 0)
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const t0 = Date.parse(rows[0]?.created_at ?? "");
+  const first = rows.filter(
+    (r) =>
+      Number.isFinite(t0) && Math.abs(Date.parse(r.created_at) - t0) <= 1000,
+  );
+  const byMode = new Map<string, number>();
+  for (const r of first)
+    byMode.set(
+      canon(r.mode),
+      (byMode.get(canon(r.mode)) ?? 0) + Number(r.amount),
+    );
+  const money2 = pmoney(amount);
+  if (byMode.size > 1)
+    return `${money2} (${[...byMode].map(([m, v]) => `${m} ${pmoney(v)}`).join(" + ")})`;
+  const mode =
+    byMode.size === 1
+      ? [...byMode.keys()][0]
+      : fallbackMode
+        ? canon(fallbackMode)
+        : "";
+  return mode ? `${money2} via ${mode}` : money2;
 }
 
 /** "1 hr 30 min" from fractional hours. */
@@ -1308,7 +1645,10 @@ const durationText = (hours: number) => {
   return `${m} min`;
 };
 
-export function bookingReceipt(b: TurfBooking): ReceiptDoc {
+function bookingReceiptRaw(
+  b: TurfBooking,
+  tabEntries?: TabEntry[],
+): ReceiptDoc {
   const courts = b.courts ?? 1;
   const snacks = b.snacks ?? [];
   const snacksTotal = b.snacks_total ?? 0;
@@ -1330,7 +1670,40 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
   const taxLines = taxLinesWithFallback(taxable, b);
   const grandTotal = bookingGrossTotal(b);
   const taxAmount = grandTotal - taxable;
-  const due = Math.max(0, rupees(grandTotal - b.advance_paid));
+  // "Put balance on tab" writes advance_paid = grand total and posts the
+  // remainder as a tab charge, so advance_paid is not cash in hand. The receipt
+  // prints what was really collected and says the rest is on the tab, exactly
+  // as the Turf screen (bookingDue / bookingCashCollected) does. No-show counts
+  // as cancelled here too, through the one shared isCancelled().
+  const cancelledBooking = isCancelled(b);
+  const onTabAmount =
+    cancelledBooking || !tabEntries
+      ? 0
+      : netTabAmountFor(tabEntries, TAB_REF_TURF_BOOKING, b.id);
+  const paidCash = tabEntries
+    ? bookingCashCollected(b, tabEntries)
+    : b.advance_paid;
+  const due = cancelledBooking
+    ? 0
+    : Math.max(0, rupees(grandTotal - b.advance_paid - onTabAmount));
+  const remainingView = remainingSummary({
+    grandTotal,
+    advances: b.advance_paid
+      ? Math.min(
+          b.advance_paid,
+          receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
+        )
+      : 0,
+    paid: paidCash,
+    fmt: pmoney,
+    cancelled: cancelledBooking,
+    onTab: onTabAmount > 0,
+    onTabAmount,
+    payments: receiptPaymentRows("turf_booking", b.id),
+    fallbackMode: b.payment_mode,
+    fallbackDate: b.booking_date,
+    fmtDate: formatDMY,
+  });
   const timeText =
     b.start_time && b.end_time ? ` ${b.start_time}-${b.end_time}` : "";
   // Same narrow-roll rationale as billReceipt: abbreviate on thermal paper so
@@ -1356,10 +1729,15 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
     lines: [
       {
         label: `${b.slot_name} slot${timeText}`,
-        sub: courtText
-          ? `${durationText(b.hours)} · ${courtText}`
-          : durationText(b.hours),
-        qty: wide ? `${courts} court${courts > 1 ? "s" : ""}` : `${courts} crt`,
+        // Duration lives in the QTY column (e.g. "3 hr"); the sub-line only
+        // carries the court name(s), or the court count when several courts
+        // are held and the venue has no named courts.
+        ...(courtText
+          ? { sub: courtText }
+          : courts > 1
+            ? { sub: `${courts} courts` }
+            : {}),
+        qty: durationText(b.hours),
         amount: turfAmount,
       },
       ...snacks.map((it) => ({
@@ -1378,12 +1756,26 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
         ? [
             {
               label: "Advance paid",
+              ...(remainingView.advanceDetail
+                ? { sub: remainingView.advanceDetail }
+                : {}),
               // Display only: the advance actually entered, not the running
               // paid total.
               amount: -Math.min(
                 b.advance_paid,
                 receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
               ),
+            },
+          ]
+        : []), // The balance collected later is its own line, with its own split.
+      ...(remainingView.balancePaid > 0
+        ? [
+            {
+              label: "Balance paid",
+              ...(remainingView.balanceModeText
+                ? { sub: remainingView.balanceModeText }
+                : {}),
+              amount: -remainingView.balancePaid,
             },
           ]
         : []),
@@ -1404,24 +1796,110 @@ export function bookingReceipt(b: TurfBooking): ReceiptDoc {
           ]
         : []),
       { label: "GRAND TOTAL", value: pmoney(grandTotal), strong: true },
-      { label: "Paid", value: pmoney(b.advance_paid) },
-      ...(due ? [{ label: "Balance due", value: pmoney(due) }] : []),
+      ...(remainingView.payableRow
+        ? [{ ...remainingView.payableRow, printHide: true }]
+        : []),
+      ...(remainingView.balanceRow
+        ? [{ ...remainingView.balanceRow, printHide: true }]
+        : []),
+      // Only a small "Paid" line stays under the total on the printed bill;
+      // payable / balance / mode rows are hidden from print (copy text keeps
+      // them) and an unsettled balance is still printed.
       {
-        label: "Mode",
-        value: receiptModeLabel("turf_booking", b.id, b.payment_mode),
+        label: "Paid",
+        value: pmoney(paidCash),
+        small: true,
+        printHide: true,
       },
+      ...remainingView.remainingRows.map((r) =>
+        due > 0 ? r : { ...r, printHide: true },
+      ),
+      // Advance and balance each get their own Mode line (never one
+      // combined Cash + UPI total across both).
+      ...(remainingView.balancePaid > 0
+        ? [
+            ...(remainingView.advanceModeText
+              ? [
+                  {
+                    label: "Advance mode",
+                    value: remainingView.advanceModeText,
+                    printHide: true,
+                  },
+                ]
+              : []),
+            ...(remainingView.balanceModeText
+              ? [
+                  {
+                    label: "Balance mode",
+                    value: remainingView.balanceModeText,
+                    printHide: true,
+                  },
+                ]
+              : []),
+          ]
+        : [
+            {
+              label: "Mode",
+              printHide: true,
+              value:
+                remainingView.modeLabel ??
+                receiptModeLabel("turf_booking", b.id, b.payment_mode),
+            },
+          ]),
       { label: "Status", value: b.status },
     ],
-    note: b.notes,
+    note: joinNotes(b.notes, remainingView.note),
+    textAdvance:
+      advanceCollectedText(
+        "turf_booking",
+        b.id,
+        b.advance_paid
+          ? Math.min(
+              b.advance_paid,
+              receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
+            )
+          : 0,
+        b.payment_mode,
+      ) ?? undefined,
     balanceDue: due,
     fileName: `${safeFilePart(b.booking_no)}-${safeFilePart(b.customer_name, "customer")}`,
   };
 }
 
-export function snackSaleReceipt(s: SnackSale): ReceiptDoc {
+function snackSaleReceiptRaw(
+  s: SnackSale,
+  tabEntries?: TabEntry[],
+): ReceiptDoc {
   const taxLines = taxLinesWithFallback(s.total, s);
   const grandTotal = snackSaleGrossTotal(s);
   const taxAmount = grandTotal - rupees(s.total);
+  const snackOnTab = s.payment_mode === "On tab";
+  // What the customer still owes on the tab for THIS sale, by the same rule the
+  // Snacks screen uses (pendingAmount). Without a loaded ledger an "On tab"
+  // sale is taken to owe its whole total.
+  const snackOwed = isCancelled(s)
+    ? 0
+    : tabEntries
+      ? Math.min(
+          grandTotal,
+          netTabAmountFor(tabEntries, TAB_REF_SNACK_SALE, s.id),
+        )
+      : snackOnTab
+        ? grandTotal
+        : 0;
+  const snackStillOnTab = snackOnTab && snackOwed > 0;
+  const remainingView = remainingSummary({
+    grandTotal,
+    advances: 0,
+    paid: snackOnTab ? grandTotal - snackOwed : grandTotal,
+    fmt: pmoney,
+    cancelled: isCancelled(s),
+    onTab: snackStillOnTab,
+    payments: receiptPaymentRows("snack_sale", s.id),
+    fallbackMode: s.payment_mode,
+    fallbackDate: s.sale_date,
+    fmtDate: formatDMY,
+  });
   return {
     kind: "Bill",
     docNo: s.bill_no,
@@ -1451,21 +1929,25 @@ export function snackSaleReceipt(s: SnackSale): ReceiptDoc {
       ...(s.booking_no
         ? [{ label: "Linked booking", value: s.booking_no }]
         : []),
-      ...(s.cancelled
+      ...(isCancelled(s)
         ? [{ label: "Status", value: "CANCELLED" }]
-        : s.payment_mode === "On tab"
+        : snackOnTab
           ? [
-              { label: "Paid", value: pmoney(0) },
-              { label: "Balance due", value: pmoney(grandTotal) },
-              { label: "Status", value: "UNPAID" },
+              { label: "Paid", value: pmoney(grandTotal - snackOwed) },
+              ...remainingView.remainingRows,
+              {
+                label: "Status",
+                value: snackStillOnTab ? "MOVED TO DUES" : "PAID",
+              },
             ]
           : [
               { label: "Paid", value: pmoney(grandTotal) },
+              ...remainingView.remainingRows,
               { label: "Status", value: "PAID" },
             ]),
     ],
-    note: s.notes,
-    balanceDue: !s.cancelled && s.payment_mode === "On tab" ? grandTotal : 0,
+    note: joinNotes(s.notes, remainingView.note),
+    balanceDue: snackStillOnTab ? snackOwed : 0,
     fileName: `${safeFilePart(s.bill_no)}-snacks`,
   };
 }
@@ -1510,8 +1992,16 @@ export function paymentReceipt(p: {
     totals: [
       { label: "Amount received", value: pmoney(p.amount), strong: true },
       { label: "Mode", value: p.mode },
+      {
+        label: "Balance before this payment",
+        value: pmoney(Math.max(0, p.balanceAfter + p.amount)),
+      },
       { label: "Balance remaining", value: pmoney(p.balanceAfter) },
     ],
+    note:
+      p.balanceAfter > 0
+        ? `Received ${pmoney(p.amount)} via ${p.mode} on ${formatDMY(now.toISOString())}. Remaining ${pmoney(p.balanceAfter)}.`
+        : `Received ${pmoney(p.amount)} via ${p.mode} on ${formatDMY(now.toISOString())}. Remaining ${pmoney(0)} - settled in full.`,
     fileName: `${docNo}-${safeFilePart(p.customer, "customer")}`,
   };
 }
@@ -1555,43 +2045,25 @@ export function customerStatementReceipt(p: {
   };
 }
 
-/** Plain-text version, used for WhatsApp / copy actions. */
-export function receiptText(doc: ReceiptDoc) {
+/** Plain-text bill for the Copy / WhatsApp buttons. Built from the same
+ * ReceiptDoc as the printed bill (see share-text.ts), so every line matches
+ * the PDF. */
+export function billShareText(bill: Bill, style: ShareStyle = "plain"): string {
+  return receiptText(billReceipt(bill), style);
+}
+
+/** Plain-text version, used for WhatsApp / copy actions. Pass "whatsapp" for
+ * the WhatsApp button (bold headings, markup in names neutralised) and leave
+ * the default for Copy (no markup). */
+export function receiptText(doc: ReceiptDoc, style: ShareStyle = "plain") {
   const s = readPrintSettings();
-  if (doc.details) {
-    const out: string[] = [
-      s.shopName.trim() || BUSINESS_NAME,
-      (doc.title ?? doc.kind).toUpperCase(),
-      ...doc.details.map((d) => `${d.label}: ${d.value}`),
-    ];
-    for (const t of doc.totals)
-      if (t.strong) out.push(`${t.label}: ${t.value}`);
-    if (doc.note) out.push("", `Note: ${doc.note}`);
-    return out.join("\n");
-  }
-  const lines: string[] = [
-    s.shopName.trim() || BUSINESS_NAME,
-    `${doc.kind} ${doc.docNo} · ${doc.dateText}`,
-  ];
-  if (doc.customer) lines.push(`Customer: ${doc.customer}`);
-  if (doc.phone && s.showPhone) lines.push(`Phone: ${doc.phone}`);
-  lines.push("");
-  for (const l of doc.lines) {
-    const qty = l.qty !== undefined && l.qty !== "" ? `${l.qty} × ` : "";
-    const sub = l.sub ? ` (${l.sub})` : "";
-    const amount =
-      l.amountText !== undefined
-        ? ` = ${l.amountText}`
-        : l.amount !== undefined
-          ? ` = ${pmoney(l.amount, s.currencySymbol)}`
-          : "";
-    lines.push(`${qty}${l.label}${sub}${amount}`);
-  }
-  lines.push("");
-  for (const t of doc.totals) lines.push(`${t.label}: ${t.value}`);
-  if (doc.note) lines.push("", `Note: ${doc.note}`);
-  if (s.footerLine) lines.push("", s.footerLine);
-  return lines.join("\n");
+  return buildShareText(doc, {
+    style,
+    shopName: s.shopName.trim() || BUSINESS_NAME,
+    showPhone: Boolean(s.showPhone),
+    footerLine: doc.details ? undefined : s.footerLine,
+    formatAmount: (n) => pmoney(n, s.currencySymbol),
+  });
 }
 
 /* ---------- backwards-compatible bill helpers ---------- */

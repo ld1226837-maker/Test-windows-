@@ -208,15 +208,19 @@ describe("pricing", () => {
 });
 
 describe("court-hours & utilisation", () => {
-  it("splits a past-midnight booking across two days, weighted by courts", () => {
+  it("keeps a past-midnight booking on one business day, weighted by courts", () => {
     const segs = courtHourSegments({
       ...bk({ start: "11 PM", hours: 2, courts: 2 }),
       end_time: "1 AM",
     });
-    expect(segs).toEqual([
-      { dayOffset: 0, from: H(23), to: 1440, n: 2 },
-      { dayOffset: 1, from: 0, to: 60, n: 2 },
-    ]);
+    expect(segs).toEqual([{ dayOffset: 0, from: H(23), to: 1500, n: 2 }]);
+  });
+  it("a 2 AM booking sits at 1560–1620 of its own business date", () => {
+    const segs = courtHourSegments({
+      ...bk({ start: "2 AM", hours: 1, courts: 1 }),
+      end_time: "3 AM",
+    });
+    expect(segs).toEqual([{ dayOffset: 0, from: 1560, to: 1620, n: 1 }]);
   });
   it("normalises by venue size and caps at 100%", () => {
     expect(utilisationPct(2, 4, 2)).toBe(25);
@@ -317,5 +321,24 @@ describe("named courts", () => {
     expect(assignCourts(next, 2, 30, 30, 2)).toEqual(["c1", "c2"]);
     const same = buildCourtOccupancy(rows, "2026-03-10", 2);
     expect(assignCourts(same, 2, H(23) + 30, 30, 1)).toEqual(["c1"]);
+  });
+});
+
+describe("overnight occupancy", () => {
+  it("a 12–1 AM booking of the SAME business date sits at keys 1440+ and blocks an 11 PM–1 AM window", () => {
+    const bookings = [
+      {
+        id: "next",
+        booking_date: "2026-10-10",
+        start_time: "12 AM",
+        end_time: "1 AM",
+        hours: 1,
+        courts: 1,
+        court_ids: ["c1"],
+      },
+    ];
+    const occupied = buildCourtOccupancy(bookings, "2026-10-10", 1);
+    expect(occupied.get(1440)?.has("c1")).toBe(true);
+    expect(freeCourtIdsFor(occupied, 1, 1380, 120)).toEqual([]);
   });
 });

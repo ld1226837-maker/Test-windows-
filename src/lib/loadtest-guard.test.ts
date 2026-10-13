@@ -57,9 +57,7 @@ describe("F-1: load-test seed sets and restores the venue court count", () => {
     async () => {
       await db.customers.clear();
       const realSetting = {
-        allow_15: true,
         allow_30: true,
-        allow_45: false,
         allow_60: true,
         total_courts: 5,
         court_names: ["A", "B", "C", "D", "E"],

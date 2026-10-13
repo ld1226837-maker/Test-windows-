@@ -1,4 +1,5 @@
 import { Moon, MoonStar, Sunrise, Sun, Sunset } from "lucide-react";
+import { localDateStr } from "@/lib/utils";
 
 export const DAY_PARTS = [
   // Earliest hours of the calendar day — previously unbookable since the
@@ -14,7 +15,42 @@ export const DAY_PARTS = [
 
 export type DayPartId = (typeof DAY_PARTS)[number]["id"];
 
-export const SLOT_INTERVALS = [15, 30, 45, 60] as const;
+/* ------------------------------------------------------------------------ *
+ * BUSINESS DAY
+ *
+ * The turf's day runs 6 AM -> 6 AM. The 12 AM-6 AM slots that follow a night
+ * belong to the PREVIOUS date: a 2 AM booking made for Saturday night is
+ * stored with booking_date = Saturday, start_time "2 AM". Minutes inside a
+ * business day are therefore counted from 6 AM: 360 … 1440 (12 AM) … 1800
+ * (6 AM the next morning). A stored start before 6 AM is read as 1440 + it.
+ * ------------------------------------------------------------------------ */
+
+/** First minute of the business day (6 AM). */
+export const BUSINESS_DAY_START = 360;
+/** One past the last minute of the business day (6 AM the next morning). */
+export const BUSINESS_DAY_END = 1800;
+
+/** Clock minutes (0–1439) -> minutes inside the business day (360–1799). */
+export const businessMinutes = (clock: number) =>
+  clock < BUSINESS_DAY_START ? clock + 1440 : clock;
+
+/** The business date "now" belongs to (before 6 AM it is still yesterday). */
+export const businessDateOf = (now: Date = new Date()) =>
+  localDateStr(new Date(now.getTime() - BUSINESS_DAY_START * 60_000));
+
+/** A day part's slot window in business-day minutes (Late Night is last). */
+export const partWindow = (p: { id: string; from: number; to: number }) =>
+  p.id === "latenight"
+    ? ([1440 + p.from * 60, 1440 + p.to * 60] as const)
+    : ([p.from * 60, p.to * 60] as const);
+
+/** Day parts in business-day order: Morning … Night, then Late Night. */
+export const PICKER_PARTS = [
+  ...DAY_PARTS.filter((p) => p.id !== "latenight"),
+  ...DAY_PARTS.filter((p) => p.id === "latenight"),
+] as const;
+
+export const SLOT_INTERVALS = [30, 60] as const;
 
 /** Formats minutes-from-midnight as "6:30 PM". Pass `alwaysMinutes` to keep ":00". */
 export const minuteLabel = (mins: number, alwaysMinutes = false) => {

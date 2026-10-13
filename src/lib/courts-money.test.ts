@@ -76,29 +76,23 @@ describe("multi-court money", () => {
       id: "rate-1",
       slot_name: "Weekdays",
       rate_per_hour: 800,
-      rate_15: null,
       rate_30: null,
-      rate_45: null,
       rate_60: 800,
       is_active: true,
     };
     expect(turfPrice(priceForDuration(row, 120), 3)).toBe(4800);
   });
 
-  it("15/30/45-minute remainder prices are multiplied by courts once", () => {
+  it("30-minute remainder prices are multiplied by courts once", () => {
     const row = {
       id: "rate-1",
       slot_name: "Weekdays",
       rate_per_hour: 1200,
-      rate_15: 300,
       rate_30: 550,
-      rate_45: 800,
       rate_60: 1200,
       is_active: true,
     };
-    expect(turfPrice(priceForDuration(row, 75), 2)).toBe(3000);
     expect(turfPrice(priceForDuration(row, 90), 2)).toBe(3500);
-    expect(turfPrice(priceForDuration(row, 105), 2)).toBe(4000);
   });
 
   it("tax is calculated on the combined multi-court total", () => {
@@ -114,7 +108,7 @@ describe("multi-court money", () => {
     expect(tax.lines.map((x) => x.value)).toEqual([90, 90, 50]);
   });
 
-  it("midnight-crossing splits court-hours across two days", () => {
+  it("midnight-crossing stays on ONE business day (6 AM–6 AM)", () => {
     const segs = courtHourSegments({
       booking_date: "2026-09-29",
       hours: 2,
@@ -122,9 +116,8 @@ describe("multi-court money", () => {
       start_time: "11:00 PM",
       end_time: "1:00 AM",
     });
-    expect(segs).toEqual([
-      { dayOffset: 0, from: 1380, to: 1440, n: 2 }, // 23:00-24:00 = 1h x 2 courts
-      { dayOffset: 1, from: 0, to: 60, n: 2 }, // 00:00-01:00 next day
-    ]);
+    // 23:00-25:00 in business-day minutes; the 12-1 AM hour is NOT pushed
+    // onto the next date.
+    expect(segs).toEqual([{ dayOffset: 0, from: 1380, to: 1500, n: 2 }]);
   });
 });
