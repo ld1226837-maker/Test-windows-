@@ -1,4 +1,5 @@
 import type { BillStatus } from "./biz";
+import { pendingLabel } from "./record-state";
 
 /**
  * Shared payment-state vocabulary for anything with a money balance —
@@ -19,16 +20,19 @@ import type { BillStatus } from "./biz";
  */
 export type PaymentState = BillStatus | "moved";
 
-export function paymentStateLabel(state: PaymentState): string {
+export function paymentStateLabel(
+  state: PaymentState,
+  /** Money still owed; makes the badge read "Pending Rs X". */
+  pending?: number,
+): string {
   switch (state) {
     case "paid":
       return "Paid";
+    // Anything that still owes money is one badge with one wording: Pending.
     case "partial":
-      return "Partially paid";
     case "unpaid":
-      return "Outstanding";
     case "moved":
-      return "Moved to tab";
+      return pending === undefined ? "Pending" : pendingLabel(pending);
     case "cancelled":
       return "Cancelled";
   }

@@ -45,6 +45,12 @@ const p = (
 /* ------------------------------------------------------------------ */
 
 export const SECTION_PARTS: Record<string, PartDef[]> = {
+  "settings.whatsapp": [
+    p("settings.whatsapp.owner-number", "Owner WhatsApp number", "field", true),
+    p("settings.whatsapp.daily-summary", "Daily summary button", "action"),
+    p("settings.whatsapp.recent-sort", "Recent bills: days and sort", "row"),
+    p("settings.whatsapp.recent-bills", "Recent bills list", "list"),
+  ],
   "home.calendar": [
     p("home.calendar.widget", "Calendar widget", "panel", true),
   ],
@@ -336,6 +342,41 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
     ],
   },
   {
+    surfaceId: "surface.cancel-invoice",
+    label: "Cancel invoice pop-up",
+    parts: [
+      p("surface.cancel-invoice.summary", "Invoice summary", "summary"),
+      p(
+        "surface.cancel-invoice.scope",
+        "Cancel invoice only / with its bills",
+        "field",
+        true,
+      ),
+      p(
+        "surface.cancel-invoice.effects",
+        "What each choice does",
+        "summary",
+        true,
+      ),
+      p(
+        "surface.cancel-invoice.money",
+        "Refund or keep the money received",
+        "field",
+        true,
+      ),
+      p("surface.cancel-invoice.actions", "Confirm button", "action", true),
+    ],
+  },
+  {
+    surfaceId: "surface.money-decision",
+    label: "Refund or keep pop-up",
+    parts: [
+      p("surface.money-decision.summary", "What is being cancelled", "summary"),
+      p("surface.money-decision.choice", "Refund or keep", "field", true),
+      p("surface.money-decision.actions", "Confirm button", "action", true),
+    ],
+  },
+  {
     surfaceId: "surface.merge-bill",
     label: "Merge into one bill pop-up",
     parts: [
@@ -348,10 +389,18 @@ export const SURFACE_REGISTRY: SurfaceDef[] = [
         true,
       ),
       p(
-        "surface.merge-bill.preview",
-        "Due-tab option & total preview",
+        "surface.merge-bill.warning",
+        "Mixed-customer warning",
         "summary",
+        true,
       ),
+      p(
+        "surface.merge-bill.due-mode",
+        "Pending / paid choice & payment",
+        "field",
+        true,
+      ),
+      p("surface.merge-bill.preview", "Total & due preview", "summary"),
       p("surface.merge-bill.actions", "Generate bill button", "action", true),
     ],
   },

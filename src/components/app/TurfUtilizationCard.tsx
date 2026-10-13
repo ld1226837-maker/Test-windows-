@@ -5,6 +5,7 @@ import { SectionHeading } from "@/components/app/SectionHeading";
 import { cn, localDateStr } from "@/lib/utils";
 import { DAY_PARTS, parseMinutes } from "@/lib/time-slot-utils";
 import type { TurfBooking } from "@/lib/ops";
+import { isLive } from "@/lib/bill-state";
 import { courtHourSegments, utilisationPct } from "@/lib/courts";
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -56,11 +57,7 @@ export function TurfUtilizationCard({ bookings, totalCourts = 1 }: Props) {
     // the other technically.
     const inWindow = bookings.filter(
       (b) =>
-        b.status !== "Cancelled" &&
-        b.status !== "No-show" &&
-        b.booking_date >= cutoffKey &&
-        b.start_time &&
-        b.end_time,
+        isLive(b) && b.booking_date >= cutoffKey && b.start_time && b.end_time,
     );
 
     // Booked-hours accumulated per (weekday, day-part) cell.

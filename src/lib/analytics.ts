@@ -1,4 +1,5 @@
-import { allocateWhole, rupees } from "./money";
+import { allocateWhole, expenseCashPart, rupees } from "./money";
+import { isCancelled, isLive } from "@/lib/record-state";
 import type { Bill } from "@/lib/biz";
 import type { ExpenseV2, SnackSale, TurfBooking } from "@/lib/ops";
 import {
@@ -13,9 +14,18 @@ import {
   billCollected,
   bookingCashCollected,
   bookingDue,
+  billForfeitedRevenue,
+  billRefundableAmount,
+  billRefundCashOut,
+  billRefundOutflow,
   bookingForfeitedRevenue,
   bookingRefundCashOut,
   bookingRefundableAdvance,
+  bookingRefundOutflow,
+  saleForfeitedRevenue,
+  saleRefundableAmount,
+  saleRefundCashOut,
+  saleRefundOutflow,
   isFinancialBooking,
   isFinancialSale,
   isTabCashPayment,
@@ -216,19 +226,91 @@ function forfeitedBookingSources(
     }));
 }
 
+/** Same idea for a cancelled BILL whose received money the owner kept. */
+function forfeitedBillSources(bills: Bill[]): PaymentSourceRecord[] {
+  return bills
+    .filter((b) => billForfeitedRevenue(b) > 0)
+    .map((b) => ({
+      id: b.id,
+      collected: billForfeitedRevenue(b),
+      mode: b.payment_mode ?? null,
+      date: b.bill_date,
+    }));
+}
+
+/** ...and for a voided snack sale whose payment the owner kept. */
+function forfeitedSaleSources(
+  sales: SnackSale[],
+  settings: AppSettings,
+): PaymentSourceRecord[] {
+  return sales
+    .filter((s) => saleForfeitedRevenue(s, settings) > 0)
+    .map((s) => ({
+      id: s.id,
+      collected: saleForfeitedRevenue(s, settings),
+      mode: s.payment_mode ?? null,
+      date: s.sale_date,
+    }));
+}
+
+/** Refundable (not yet paid back) money on cancelled bills / voided sales:
+ * it physically arrived, so the split and drawer see it like a booking's. */
+/** Refundable-or-already-refunded money held by a CANCELLED bill (F-DRAWER). */
+const billHeldRefundable = (b: Bill) =>
+  billRefundableAmount(b) || (isCancelled(b) ? billRefundOutflow(b) : 0);
+
+function refundableBillSources(bills: Bill[]): PaymentSourceRecord[] {
+  return bills
+    .filter((b) => isCancelled(b) && billHeldRefundable(b) > 0)
+    .map((b) => ({
+      id: b.id,
+      collected: billHeldRefundable(b),
+      mode: b.payment_mode ?? null,
+      date: b.bill_date,
+    }));
+}
+
+const saleHeldRefundable = (s: SnackSale, settings: AppSettings) =>
+  saleRefundableAmount(s, settings) ||
+  (isCancelled(s) ? saleRefundOutflow(s, settings) : 0);
+
+function refundableSaleSources(
+  sales: SnackSale[],
+  settings: AppSettings,
+): PaymentSourceRecord[] {
+  return sales
+    .filter((s) => saleHeldRefundable(s, settings) > 0)
+    .map((s) => ({
+      id: s.id,
+      collected: saleHeldRefundable(s, settings),
+      mode: s.payment_mode ?? null,
+      date: s.sale_date,
+    }));
+}
+
 /** K4: refundable advances — money that physically arrived and is owed back.
  * Payment sources for paymentSplit (received_at basis), so the Cash/Online
  * split and drawer see the cash on the day it arrived. The liability KPI
  * (refundableAdvance) stays booking_date-based and drops once refunded. */
+/**
+ * Money that physically arrived on a cancelled booking and is still owed back
+ * OR was already paid back. A refunded receipt must stay in the Cash/UPI split
+ * on the day it arrived; the refund is a separate outflow on its own day
+ * (cashRefundOutflowOn). Dropping it from the split as well made a same-day
+ * refund deduct twice (F-DRAWER).
+ */
+const receivedThenCancelled = (b: TurfBooking, entries: TabEntry[]) =>
+  bookingRefundableAdvance(b, entries) || bookingRefundOutflow(b, entries);
+
 function refundableBookingSources(
   bookings: TurfBooking[],
   entries: TabEntry[],
 ): PaymentSourceRecord[] {
   return bookings
-    .filter((b) => bookingRefundableAdvance(b, entries) > 0)
+    .filter((b) => receivedThenCancelled(b, entries) > 0)
     .map((b) => ({
       id: b.id,
-      collected: bookingRefundableAdvance(b, entries),
+      collected: receivedThenCancelled(b, entries),
       mode: b.payment_mode ?? null,
       date: b.booking_date,
     }));
@@ -320,14 +402,18 @@ function collectionEntriesFor(src: Sources, appSettings: AppSettings) {
   if (cached) return cached;
   const entries = src.tabEntries ?? [];
   const input: CollectionSource = {
-    bill: src.bills
-      .filter((b) => b.status !== "cancelled")
-      .map((b) => ({
-        id: b.id,
-        collected: billCollected(b, appSettings),
-        mode: b.payment_mode ?? null,
-        date: b.bill_date,
-      })),
+    bill: [
+      ...src.bills
+        .filter((b) => isLive(b))
+        .map((b) => ({
+          id: b.id,
+          collected: billCollected(b, appSettings),
+          mode: b.payment_mode ?? null,
+          date: b.bill_date,
+        })),
+      ...forfeitedBillSources(src.bills),
+      ...refundableBillSources(src.bills),
+    ],
     turf_booking: [
       ...src.bookings
         .filter((b) => isFinancialBooking(b))
@@ -340,14 +426,18 @@ function collectionEntriesFor(src: Sources, appSettings: AppSettings) {
       ...forfeitedBookingSources(src.bookings, entries),
       ...refundableBookingSources(src.bookings, entries),
     ],
-    snack_sale: src.sales
-      .filter((s) => isFinancialSale(s))
-      .map((s) => ({
-        id: s.id,
-        collected: snackSaleCollected(s, appSettings),
-        mode: s.payment_mode ?? null,
-        date: s.sale_date,
-      })),
+    snack_sale: [
+      ...src.sales
+        .filter((s) => isFinancialSale(s))
+        .map((s) => ({
+          id: s.id,
+          collected: snackSaleCollected(s, appSettings),
+          mode: s.payment_mode ?? null,
+          date: s.sale_date,
+        })),
+      ...forfeitedSaleSources(src.sales, appSettings),
+      ...refundableSaleSources(src.sales, appSettings),
+    ],
   };
   const result = effectivePaymentEntries(input, src.payments ?? []);
   bySettings.set(appSettings, result);
@@ -372,7 +462,11 @@ export function periodStats(
   // than reusing `matches(b.booking_date)` like every other booking here.
   const entries = src.tabEntries ?? [];
   const forfeitedRevenue = effectivePaymentEntries(
-    { turf_booking: forfeitedBookingSources(src.bookings, entries) },
+    {
+      turf_booking: forfeitedBookingSources(src.bookings, entries),
+      bill: forfeitedBillSources(src.bills),
+      snack_sale: forfeitedSaleSources(src.sales, appSettings),
+    },
     src.payments ?? [],
   )
     .filter((e) => matches(e.received_at))
@@ -382,11 +476,14 @@ export function periodStats(
   // (refundableAdvanceTotal) rather than another effectivePaymentEntries
   // pass, since this is a liability to surface, not income to date by
   // received-at — see that function's doc comment.
-  const refundableAdvance = refundableAdvanceTotal(
-    src.bookings,
-    matches,
-    entries,
-  );
+  const refundableAdvance =
+    refundableAdvanceTotal(src.bookings, matches, entries) +
+    src.bills
+      .filter((b) => matches(b.bill_date))
+      .reduce((n, b) => n + billRefundableAmount(b), 0) +
+    src.sales
+      .filter((s) => matches(s.sale_date))
+      .reduce((n, s) => n + saleRefundableAmount(s, appSettings), 0);
   // Sales rolled into a merged bill are no longer their own financial record:
   // their revenue is on the bill (see lib/dues.ts / isFinancialSale).
   const sales = src.sales.filter(
@@ -423,7 +520,7 @@ export function periodStats(
     // tax collected — see BillStatus in biz.ts. Skip it entirely rather
     // than letting its stored total/amount_paid leak into any of the
     // sums below.
-    if (b.status === "cancelled") continue;
+    if (isCancelled(b)) continue;
     // Whole-rupee taxable amount, exactly as billGrossTotal()/the receipt use it.
     const net = rupees(b.total);
     const taxAmount =
@@ -685,10 +782,26 @@ export function cashRefundOutflowOn(
   bookings: TurfBooking[],
   entries: TabEntry[],
   day: string,
+  /** Invoices and snack sales share the refund model with bookings. */
+  bills: readonly Bill[] = [],
+  sales: readonly SnackSale[] = [],
+  appSettings?: AppSettings,
 ): number {
-  return bookings
-    .filter((b) => b.refunded_at && dayKey(b.refunded_at) === day)
-    .reduce((n, b) => n + bookingRefundCashOut(b, entries), 0);
+  const onDay = (iso: string | null | undefined) =>
+    Boolean(iso) && dayKey(iso as string) === day;
+  return (
+    bookings
+      .filter((b) => onDay(b.refunded_at))
+      .reduce((n, b) => n + bookingRefundCashOut(b, entries), 0) +
+    bills
+      // A live bill moved back to unpaid has its receipts removed, so the cash
+      // already left the drawer's day; only a cancelled bill's receipts stay.
+      .filter((b) => isCancelled(b) && onDay(b.refunded_at))
+      .reduce((n, b) => n + billRefundCashOut(b), 0) +
+    sales
+      .filter((s) => onDay(s.refunded_at))
+      .reduce((n, s) => n + saleRefundCashOut(s, appSettings), 0)
+  );
 }
 
 /** Percent change vs a previous value; null when there is no comparable base. */
@@ -844,7 +957,7 @@ export function taxReport(
       byLabel.set(l.label, (byLabel.get(l.label) ?? 0) + rupees(l.value));
   };
   for (const b of src.bills)
-    if (b.status !== "cancelled") add(monthKey(b.bill_date), b.total, b);
+    if (isLive(b)) add(monthKey(b.bill_date), b.total, b);
   for (const b of src.bookings)
     if (isFinancialBooking(b))
       add(monthKey(b.booking_date), bookingTaxable(b), b);
@@ -1096,7 +1209,7 @@ export function turfOccupancy(
     row(`hr-${h}`, `${String(h).padStart(2, "0")}:00`, agg, hourRevenue[h]),
   );
 
-  const cancelledRows = period.filter((b) => b.status === "Cancelled");
+  const cancelledRows = period.filter((b) => isCancelled(b));
   // "Unpaid" = the shared tax-inclusive, tab-aware bookingDue() — the same
   // figure the Turf/Dues tabs show, not a pre-tax total minus advance.
   const unpaidRows = financial.filter((b) => bookingDue(b, tabEntries) > 0);
@@ -1250,5 +1363,39 @@ export function customerRanking<T extends RankableCustomer>(
       .filter((c) => owedBy(c) > 0)
       .sort((a, b) => owedBy(b) - owedBy(a))
       .slice(0, limit),
+  };
+}
+
+/**
+ * What should be sitting in the cash drawer for one IST day - the ONE formula
+ * the Dashboard and the tests share: cash collected that day, minus cash
+ * expenses, minus cash refunds paid back (turf bookings, invoices and snack
+ * sales all share the refund model).
+ */
+export function drawerCashOn(
+  src: Sources,
+  day: string,
+  appSettings?: AppSettings,
+) {
+  const cashCollected =
+    paymentSplit(src, (iso) => dayKey(iso) === day, appSettings).find(
+      (p) => p.name === "Cash",
+    )?.value ?? 0;
+  const cashExpenses = src.expenses
+    .filter((e) => dayKey(e.spent_at) === day)
+    .reduce((n, e) => n + expenseCashPart(e), 0);
+  const cashRefunds = cashRefundOutflowOn(
+    src.bookings,
+    src.tabEntries ?? [],
+    day,
+    src.bills,
+    src.sales,
+    appSettings,
+  );
+  return {
+    cashCollected,
+    cashExpenses,
+    cashRefunds,
+    expected: cashCollected - cashExpenses - cashRefunds,
   };
 }

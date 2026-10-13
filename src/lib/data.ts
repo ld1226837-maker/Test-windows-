@@ -1,3 +1,4 @@
+import { isLive } from "./record-state";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   billGrossTotal,
@@ -10,13 +11,15 @@ import {
 import { isFinancialBooking } from "./analytics";
 import type { SnackSale, TurfBooking } from "./ops";
 import {
+  billCollected,
   billDue,
   bookingDue,
   customerOutstanding,
   isFinancialSale,
 } from "./dues";
 import { tabBalanceOf, tabKey, type TabEntry } from "./tabs";
-import { unmergeBill } from "./merge";
+import { cancelInvoice, unmergeBill, type CancelScope } from "./merge";
+import type { MoneyDecision } from "./record-state";
 import { removePaymentsForParents } from "./payments";
 import {
   db,
@@ -171,47 +174,85 @@ export function useDeleteHistory() {
   });
 }
 
+/**
+ * Changes a bill's status. Moving a bill with money received back to unpaid
+ * needs an explicit refund (see below); exported so the rule is testable.
+ */
+export async function updateBillStatus({
+  id,
+  status,
+  amount_paid,
+  payment_mode,
+  refund,
+}: {
+  id: string;
+  status: BillStatus;
+  amount_paid: number;
+  payment_mode?: string | null;
+  /** Required to move a bill with money received back to unpaid: the
+   * received amount is paid back to the customer (see below). */
+  refund?: { refund_mode?: "Cash" | "UPI" };
+}) {
+  // Moving a paid/partly paid bill back to unpaid un-receives money. That
+  // must be an explicit refund (paid back from the drawer), never a silent
+  // deletion of the receipts.
+  let refundPatch: Record<string, unknown> = {};
+  if (status === "unpaid") {
+    const current = await db.bills.get(id);
+    const held = current ? billCollected(current as unknown as Bill) : 0;
+    if (current && held > 0) {
+      if (!refund)
+        throw new Error(
+          `Rs ${held} has been received on this bill. Refund it to mark the bill unpaid.`,
+        );
+      if (current.refunded_at)
+        throw new Error(
+          "A refund is already recorded on this bill, so it cannot be refunded again.",
+        );
+      refundPatch = {
+        refunded_at: new Date().toISOString(),
+        refund_mode: refund.refund_mode ?? "Cash",
+        refund_amount: held,
+      };
+    }
+  }
+  if (status === "partial") {
+    const current = await db.bills.get(id);
+    if (!current) throw new Error("Bill not found");
+    const gross = billGrossTotal(current as unknown as Bill);
+    if (!(amount_paid > 0 && amount_paid < gross)) {
+      throw new Error(
+        "A partially paid bill must have an amount paid between zero and its total.",
+      );
+    }
+  }
+  // A bill moved back to unpaid must lose its old payment mode, otherwise
+  // the receipt keeps claiming "Paid by UPI" on a bill with nothing paid —
+  // and a bill paid again by a different mode would keep the stale one.
+  const modePatch =
+    status === "unpaid"
+      ? { payment_mode: null }
+      : payment_mode === undefined
+        ? {}
+        : { payment_mode };
+  await db.transaction("rw", db.bills, db.payments, async () => {
+    await db.bills.update(id, {
+      status,
+      amount_paid,
+      ...modePatch,
+      ...refundPatch,
+    });
+    // Back to unpaid means the money is no longer received (it was just
+    // refunded above, which is recorded on the bill): the old receipts go
+    // too, or a later payment would pile onto stale rows.
+    if (status === "unpaid") await removePaymentsForParents("bill", [id]);
+  });
+}
+
 export function useUpdateBill() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({
-      id,
-      status,
-      amount_paid,
-      payment_mode,
-    }: {
-      id: string;
-      status: BillStatus;
-      amount_paid: number;
-      payment_mode?: string | null;
-    }) => {
-      if (status === "partial") {
-        const current = await db.bills.get(id);
-        if (!current) throw new Error("Bill not found");
-        const gross = billGrossTotal(current as unknown as Bill);
-        if (!(amount_paid > 0 && amount_paid < gross)) {
-          throw new Error(
-            "A partially paid bill must have an amount paid between zero and its total.",
-          );
-        }
-      }
-      // A bill moved back to unpaid must lose its old payment mode, otherwise
-      // the receipt keeps claiming "Paid by UPI" on a bill with nothing paid —
-      // and a bill paid again by a different mode would keep the stale one.
-      const modePatch =
-        status === "unpaid"
-          ? { payment_mode: null }
-          : payment_mode === undefined
-            ? {}
-            : { payment_mode };
-      await db.transaction("rw", db.bills, db.payments, async () => {
-        await db.bills.update(id, { status, amount_paid, ...modePatch });
-        // Back to unpaid means the money was never (or is no longer)
-        // received: its receipts go too, or a later payment would pile onto
-        // stale rows and the split would show cash that isn't there.
-        if (status === "unpaid") await removePaymentsForParents("bill", [id]);
-      });
-    },
+    mutationFn: updateBillStatus,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bills"] });
       qc.invalidateQueries({ queryKey: ["payments"] });
@@ -252,23 +293,42 @@ export function useDeleteBill() {
  * revenue (see billDue/billCollected in dues.ts), distinct from
  * `useDeleteBill`, which removes the row entirely.
  */
+/**
+ * Every data set a void/cancel touches. Voiding an invoice and voiding a snack
+ * sale both invalidate exactly this list, so no screen keeps showing money the
+ * other path already changed. (Payment rows are included: the Cash/UPI split
+ * and the drawer read them.)
+ */
+export const VOID_QUERY_KEYS = [
+  "bills",
+  "turf_bookings",
+  "snack_sales",
+  "snack_items",
+  "snack_stock_history",
+  "payments",
+  "tab_entries",
+  "customer_tabs",
+  "teams",
+  "team_players",
+] as const;
+
 export function useVoidBill() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await unmergeBill(id, { cancel: true });
+    mutationFn: async (
+      input:
+        string | { id: string; scope?: CancelScope; money?: MoneyDecision },
+    ) => {
+      const { id, scope, money } =
+        typeof input === "string" ? { id: input } : input;
+      await cancelInvoice(id, {
+        ...(scope ? { scope } : {}),
+        ...(money ? { money } : {}),
+      });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["bills"] });
-      qc.invalidateQueries({ queryKey: ["turf_bookings"] });
-      qc.invalidateQueries({ queryKey: ["snack_sales"] });
-      qc.invalidateQueries({ queryKey: ["tab_entries"] });
-      qc.invalidateQueries({ queryKey: ["teams"] });
-      qc.invalidateQueries({ queryKey: ["team_players"] });
-      qc.invalidateQueries({ queryKey: ["customer_tabs"] });
-      // These flows remove the bill's payment rows via unmergeBill (F-13):
-      // the payment split and drawer must refresh too.
-      qc.invalidateQueries({ queryKey: ["payments"] });
+      for (const key of VOID_QUERY_KEYS)
+        qc.invalidateQueries({ queryKey: [key] });
     },
   });
 }
@@ -556,7 +616,7 @@ export function customerLifetimeStats(
   for (const b of data.bills) {
     for (const i of matchIndexes(b.customer_name, b.customer_phone)) {
       const a = acc[i]!;
-      if (b.status !== "cancelled") a.billsSpend += Number(b.total) || 0;
+      if (isLive(b)) a.billsSpend += Number(b.total) || 0;
       if (b.id && b.status) {
         const key = tabKey(customers[i]!.name, customers[i]!.phone);
         a.outstandingBillDues += billDue(

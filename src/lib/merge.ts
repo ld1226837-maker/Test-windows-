@@ -32,7 +32,7 @@ import {
   type Unit,
 } from "./biz";
 import { storedTurfAmount } from "./courts";
-import { netTabAmountFor } from "./dues";
+import { billCollected, bookingCashCollected, netTabAmountFor } from "./dues";
 import { rupees } from "./money";
 import type { MergedBreakdown } from "./merge-breakdown";
 import {
@@ -46,7 +46,14 @@ import {
   type TabEntryRow,
   type TurfBookingRow,
 } from "./localdb";
-import { TAB_PAYMENT_MODE } from "./ops";
+import {
+  TAB_PAYMENT_MODE,
+  applySnackStockDelta,
+  type SnackSaleItem,
+  type SnackStockChange,
+} from "./ops";
+import { pendingAmount } from "./bill-state";
+import { isCancelled, refundPatch, type MoneyDecision } from "./record-state";
 import {
   effectivePaymentEntries,
   firstBatchRows,
@@ -60,7 +67,9 @@ import {
   TAB_REF_MERGE_REVERSE,
   TAB_REF_SNACK_SALE,
   TAB_REF_TURF_BOOKING,
+  tabKey,
   writeTabEntries,
+  type TabEntry,
   type AddTabEntryInput,
 } from "./tabs";
 
@@ -77,8 +86,90 @@ export type MergeInput = {
   subtotal: number;
   discount: number;
   total: number;
-  putOnTab: boolean;
+  /** Legacy switch: post the whole outstanding amount as ONE charge on the
+   * customer's running tab instead of leaving it on the bill. Ignored when
+   * `dueMode` is given. */
+  putOnTab?: boolean;
+  /**
+   * What the owner chose in the dialog.
+   * - "pending": generate the invoice with nothing more collected; the due
+   *   stays on the BILL (status unpaid/partial) and shows in Outstanding once.
+   * - "paid": same write; the dialog then records the money received now
+   *   through collectBillPayment, so the receipt rows are the normal ones.
+   * Either way the due lives in exactly one place (the bill).
+   */
+  dueMode?: "pending" | "paid";
 };
+
+/** Name used when neither the owner nor any picked record has one. */
+export const WALK_IN_NAME = "Walk-in customer";
+
+type CustomerHint = { name?: string | null; phone?: string | null };
+
+/**
+ * The customer a merged bill is issued to. What the owner typed wins; any
+ * blank part is taken from the FIRST picked record that has a name or phone
+ * (both from the same record, so a name is never paired with another
+ * customer's number); no name anywhere falls back to "Walk-in customer".
+ * Pure, shared by the dialog and mergeIntoBill.
+ */
+export function resolveMergeCustomer(
+  typed: CustomerHint,
+  picked: readonly CustomerHint[],
+): { name: string; phone: string | null } {
+  const first = picked.find((p) => p.name?.trim() || p.phone?.trim());
+  const name = typed.name?.trim() || first?.name?.trim() || WALK_IN_NAME;
+  const phone = typed.phone?.trim() || first?.phone?.trim() || null;
+  return { name, phone };
+}
+
+/** True for a record that carries no customer identity at all. */
+export const isNamelessCandidate = (c: CustomerHint) =>
+  !c.name?.trim() && !(c.phone ?? "").replace(/\D/g, "");
+
+/** Customer identity of a candidate: phone first, then name (lib/tabs.ts). */
+export const mergeCandidateKey = (c: CustomerHint) =>
+  tabKey(c.name ?? "", c.phone ?? null);
+
+/**
+ * Distinct customers among the picked records, in pick order. More than one
+ * means the owner mixed two customers onto one bill (the dialog warns).
+ */
+export function distinctMergeCustomers(
+  picked: readonly CustomerHint[],
+): { key: string; name: string }[] {
+  const seen = new Map<string, string>();
+  for (const c of picked) {
+    // A record with no name and no phone belongs to nobody: it never counts
+    // as a second customer.
+    if (isNamelessCandidate(c)) continue;
+    const key = mergeCandidateKey(c);
+    if (!seen.has(key)) seen.set(key, c.name?.trim() || WALK_IN_NAME);
+  }
+  return [...seen].map(([key, name]) => ({ key, name }));
+}
+
+/**
+ * Filter THEN order candidates: the anchor customer's records first (most
+ * recent first is kept from the input order), everyone else after. With no
+ * anchor the list is returned untouched. Filtering before sorting keeps the
+ * cost proportional to the visible customer, not the whole year.
+ */
+export function orderCandidates<T extends CustomerHint>(
+  rows: readonly T[],
+  anchorKey: string | null,
+  onlyAnchor: boolean,
+): T[] {
+  if (!anchorKey) return [...rows];
+  // A nameless record (a snack sale without a customer) cannot belong to
+  // anyone else, so it stays with the anchor customer's candidates.
+  const isMine = (r: T) =>
+    isNamelessCandidate(r) || mergeCandidateKey(r) === anchorKey;
+  const mine = rows.filter(isMine);
+  if (onlyAnchor) return mine;
+  const others = rows.filter((r) => !isMine(r));
+  return [...mine, ...others];
+}
 
 export type MergePreview = {
   total: number;
@@ -500,8 +591,6 @@ async function issueInvoiceNo() {
  * transaction. Refuses to merge a record that is already on another bill.
  */
 export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
-  const name = input.name.trim();
-  if (!name) throw new Error("Customer name is required for a merged bill");
   if (input.bookingIds.length + input.saleIds.length === 0)
     throw new Error("Select at least one turf booking or snack bill");
 
@@ -537,6 +626,14 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
           );
         sales.push(row);
       }
+
+      // A merge never needs a typed name: blank parts come from the first
+      // picked record, then "Walk-in customer" (resolveMergeCustomer).
+      const { name, phone } = resolveMergeCustomer(input, [
+        ...bookings.map((b) => ({ name: b.customer_name, phone: b.phone })),
+        ...sales.map((s) => ({ name: s.customer_name, phone: null })),
+      ]);
+      const putOnTab = input.dueMode ? false : Boolean(input.putOnTab);
 
       const ledger = await db.tab_entries
         .where("ref_id")
@@ -666,7 +763,7 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
         id: billId,
         invoice_no: await issueInvoiceNo(),
         customer_name: name,
-        customer_phone: input.phone?.trim() || null,
+        customer_phone: phone,
         items: input.items as unknown as unknown[],
         subtotal: round2(input.subtotal),
         discount: round2(input.discount),
@@ -676,8 +773,8 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
         // Only money genuinely received. The rest, on an "On tab" bill, is a
         // tab charge — never counted here as collected revenue.
         amount_paid: math.collected,
-        status: input.putOnTab && status === "paid" ? "paid" : status,
-        payment_mode: input.putOnTab ? TAB_PAYMENT_MODE : null,
+        status,
+        payment_mode: putOnTab ? TAB_PAYMENT_MODE : null,
         merged_breakdown,
         bill_date: nowIso(),
         created_at: nowIso(),
@@ -716,7 +813,7 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
         .filter((s) => s.onTab > 0)
         .map((s) => ({
           name,
-          phone: input.phone,
+          phone,
           kind: "payment" as const,
           business: "Shared",
           amount: s.onTab,
@@ -729,10 +826,10 @@ export async function mergeIntoBill(input: MergeInput): Promise<Bill> {
 
       // 2. The merged bill carries the whole outstanding amount when the
       //    operator puts it on the tab.
-      if (input.putOnTab && math.outstanding > 0) {
+      if (putOnTab && math.outstanding > 0) {
         writes.push({
           name,
-          phone: input.phone,
+          phone,
           kind: "charge",
           business: "Shared",
           amount: math.outstanding,
@@ -920,3 +1017,335 @@ export async function isMergedBill(billId: string) {
 
 /** Gross (tax-inclusive) amount of a merged bill, for display. */
 export const mergedBillGross = (bill: Bill) => billGrossTotal(bill);
+
+// ---------------------------------------------------------------------------
+// Cancelling an invoice
+// ---------------------------------------------------------------------------
+
+/**
+ * What cancelling a MERGED invoice does to the bills it was built from:
+ *  - "invoice-only": the invoice is cancelled and the turf booking / snack
+ *    bills come back as separate live bills (their dues restored, nothing is
+ *    refunded because the sources keep their own money);
+ *  - "invoice-and-sources": the invoice AND its turf booking / snack bills are
+ *    cancelled (snack stock goes back on the shelf) and the money already
+ *    received follows the refund-or-keep decision.
+ * A plain (never merged) invoice has no sources, so the scope is irrelevant.
+ */
+export type CancelScope = "invoice-only" | "invoice-and-sources";
+
+export type CancelInvoicePreview = {
+  invoiceNo: string;
+  merged: boolean;
+  /** Tax-inclusive invoice total. */
+  total: number;
+  /** Money really received on the invoice so far. */
+  collected: number;
+  bookings: { id: string; no: string; total: number }[];
+  sales: { id: string; no: string; total: number; units: number }[];
+  /** invoice-and-sources: snack units that go back into stock. */
+  stockUnits: number;
+  /** The invoice's own charge on the customer's tab, which is reversed. */
+  billOnTab: number;
+  /** Money paid on the invoice that none of its turf/snack bills carries
+   * (e.g. a snack part paid after the merge). It has no bill to go back to. */
+  billOnlyMoney: number;
+  /** invoice-only: due that returns to the customer's tab on the sources. */
+  tabRestored: number;
+};
+
+/** Read-only numbers for the cancel dialog; writes nothing. */
+export async function previewCancelInvoice(
+  billId: string,
+): Promise<CancelInvoicePreview> {
+  const bill = await db.bills.get(billId);
+  if (!bill) throw new Error("Invoice not found");
+  const [bookings, sales, billEntries] = await Promise.all([
+    db.turf_bookings.where("merged_into_bill_id").equals(billId).toArray(),
+    db.snack_sales.where("merged_into_bill_id").equals(billId).toArray(),
+    db.tab_entries.where("ref_id").equals(billId).toArray(),
+  ]);
+  const reversals = billEntries.filter(
+    (e) =>
+      e.ref_type === TAB_REF_MERGE_REVERSE &&
+      e.ref_id === billId &&
+      e.kind === "payment",
+  );
+  const sourceIds = [
+    ...new Set(
+      reversals.map((e) => e.source_ref_id).filter((x): x is string => !!x),
+    ),
+  ];
+  const sourceEntries = sourceIds.length
+    ? await db.tab_entries.where("ref_id").anyOf(sourceIds).toArray()
+    : [];
+  const ledger = [...billEntries, ...sourceEntries];
+  let tabRestored = 0;
+  for (const e of reversals) {
+    const back = netTabAmountFor(
+      ledger,
+      e.source_ref_type ?? "",
+      e.source_ref_id,
+    );
+    tabRestored += Math.max(0, round2(num(e.amount) - back));
+  }
+  const units = (items: unknown) =>
+    ((items ?? []) as SnackSaleItem[]).reduce((n, l) => n + num(l.qty), 0);
+  const collected = billCollected(bill as unknown as Bill);
+  const carried =
+    bookings.reduce((n, b) => n + bookingCashCollected(b as never, ledger), 0) +
+    sales.reduce(
+      (n, s) => n + (s.payment_mode === TAB_PAYMENT_MODE ? 0 : num(s.total)),
+      0,
+    );
+  return {
+    invoiceNo: bill.invoice_no,
+    billOnlyMoney:
+      bookings.length + sales.length > 0
+        ? Math.max(0, round2(collected - carried))
+        : 0,
+    merged: bookings.length + sales.length > 0,
+    total: billGrossTotal(bill as unknown as Bill),
+    collected: billCollected(bill as unknown as Bill),
+    bookings: bookings.map((b) => ({
+      id: b.id,
+      no: b.booking_no,
+      total: num(b.total_amount),
+    })),
+    sales: sales.map((s) => ({
+      id: s.id,
+      no: s.bill_no,
+      total: num(s.total),
+      units: units(s.items),
+    })),
+    stockUnits: sales.reduce((n, s) => n + units(s.items), 0),
+    billOnTab: netTabAmountFor(ledger, TAB_REF_BILL, billId),
+    tabRestored: round2(tabRestored),
+  };
+}
+
+/**
+ * Cancels an invoice (merged or plain). Money already received is never
+ * deleted silently: when something was collected the caller MUST pass the
+ * owner's refund-or-keep decision, which is stored on the invoice as the
+ * shared refund fields (is_refundable / refunded_at / refund_mode) and keeps
+ * its payment rows so the Cash/UPI split and the drawer stay honest.
+ *
+ * For a merged invoice with scope "invoice-only" the legacy un-merge path
+ * runs (sources come back as separate bills and keep their own money).
+ */
+export async function cancelInvoice(
+  billId: string,
+  options: { scope?: CancelScope; money?: MoneyDecision } = {},
+): Promise<{ stockChanges: SnackStockChange[] }> {
+  const scope = options.scope ?? "invoice-only";
+  const bill = await db.bills.get(billId);
+  if (!bill) throw new Error("Invoice not found");
+  if (isCancelled(bill))
+    throw new Error(`${bill.invoice_no} is already cancelled`);
+
+  if (scope === "invoice-only" && (await isMergedBill(billId))) {
+    // Never lose money silently: a payment the bills do not carry would vanish
+    // with the invoice's receipts.
+    const preview = await previewCancelInvoice(billId);
+    if (preview.billOnlyMoney > 0)
+      throw new Error(billOnlyBlockMessage(preview.billOnlyMoney));
+    await unmergeBill(billId, { cancel: true });
+    return { stockChanges: [] };
+  }
+
+  const collected = billCollected(bill as unknown as Bill);
+  if (collected > 0 && !options.money) {
+    throw new Error(
+      `Rs ${collected} was already received on ${bill.invoice_no}. Choose whether to refund it or keep it.`,
+    );
+  }
+
+  const stockChanges: SnackStockChange[] = [];
+  await db.transaction(
+    "rw",
+    [
+      db.bills,
+      db.turf_bookings,
+      db.snack_sales,
+      db.snack_items,
+      db.snack_stock_history,
+      db.customer_tabs,
+      db.tab_entries,
+      db.payments,
+    ],
+    async () => {
+      const now = new Date().toISOString();
+      const name = bill.customer_name?.trim() ?? "";
+
+      // The sources of a merged invoice are cancelled with it. They stay
+      // linked to the invoice (their money lives on it, never on them).
+      const bookings = await db.turf_bookings
+        .where("merged_into_bill_id")
+        .equals(billId)
+        .toArray();
+      for (const b of bookings)
+        await db.turf_bookings.update(b.id, { status: "Cancelled" });
+      const sales = await db.snack_sales
+        .where("merged_into_bill_id")
+        .equals(billId)
+        .toArray();
+      if (sales.length > 0) {
+        const stockRows = await db.snack_items.toArray();
+        for (const sale of sales) {
+          if (isCancelled(sale)) continue;
+          for (const line of (sale.items ?? []) as SnackSaleItem[])
+            await applySnackStockDelta(
+              line,
+              line.qty,
+              now,
+              stockRows,
+              stockChanges,
+              "sale_reversal",
+            );
+          await db.snack_sales.update(sale.id, { cancelled: true });
+        }
+      }
+
+      // The invoice's own charge on the customer's tab goes away with it.
+      const billEntries = await db.tab_entries
+        .where("ref_id")
+        .equals(billId)
+        .toArray();
+      const billOnTab = netTabAmountFor(billEntries, TAB_REF_BILL, billId);
+      if (billOnTab > 0 && name) {
+        await writeTabEntries([
+          {
+            name,
+            phone: bill.customer_phone ?? null,
+            kind: "payment" as const,
+            business: "Shared",
+            amount: billOnTab,
+            note: `Cancelled ${bill.invoice_no}`,
+            ref_type: TAB_REF_BILL,
+            ref_id: billId,
+          },
+        ]);
+      }
+
+      if (collected > 0 && options.money) {
+        // Freeze what was really received so the held amount is known after
+        // the status flips; payment rows are kept (never deleted).
+        await db.bills.update(billId, {
+          status: "cancelled",
+          amount_paid: collected,
+          ...refundPatch(options.money, now),
+        });
+      } else {
+        await db.bills.update(billId, {
+          status: "cancelled",
+          payment_mode: null,
+        });
+      }
+    },
+  );
+  return { stockChanges };
+}
+
+const billOnlyBlockMessage = (amount: number) =>
+  `Rs ${amount} was paid directly on this invoice and has no turf or snack bill to go back to. Cancel the invoice and its bills instead, then refund or keep that money.`;
+
+/** What a given cancel choice will do, for the dialog (pure, testable). */
+export type CancelEffects = {
+  /** Why "invoice only" cannot be used right now, or null. */
+  blocked: string | null;
+  /** Money was received and the cancel keeps/refunds it: the owner must pick. */
+  needsMoneyDecision: boolean;
+  moneyAtStake: number;
+  /** Bills released as separate live bills (invoice-only). */
+  sourcesReleased: number;
+  /** Turf bookings + snack bills cancelled with the invoice. */
+  sourcesCancelled: number;
+  stockUnitsRestored: number;
+  /** Due that returns to the customer's tab on the released bills. */
+  tabDueRestored: number;
+  /** The invoice's own charge removed from the customer's tab. */
+  billTabReversed: number;
+};
+
+export function cancelInvoiceEffects(
+  p: CancelInvoicePreview,
+  scope: CancelScope,
+): CancelEffects {
+  const sources = p.bookings.length + p.sales.length;
+  const releasing = p.merged && scope === "invoice-only";
+  return {
+    blocked:
+      releasing && p.billOnlyMoney > 0
+        ? billOnlyBlockMessage(p.billOnlyMoney)
+        : null,
+    // Released sources keep their own money, so nothing is refunded or kept.
+    needsMoneyDecision: p.collected > 0 && !releasing,
+    moneyAtStake: releasing ? 0 : p.collected,
+    sourcesReleased: releasing ? sources : 0,
+    sourcesCancelled: p.merged && !releasing ? sources : 0,
+    stockUnitsRestored: p.merged && !releasing ? p.stockUnits : 0,
+    tabDueRestored: releasing ? p.tabRestored : 0,
+    billTabReversed: p.billOnTab,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One-tap merge from the Outstanding screen
+// ---------------------------------------------------------------------------
+
+/**
+ * Merges everything one customer owes on a live turf booking AND on a live
+ * snack bill into a single PENDING invoice (nothing has to be paid first).
+ * Candidates are matched by the customer's tab identity (phone first, then
+ * name): bookings by their own name/phone, snack sales by the customer their
+ * tab charge was posted to. Only records that really owe money are taken, so
+ * a paid booking is never dragged onto the invoice.
+ *
+ * Throws when the customer does not have both a pending booking and a pending
+ * snack bill (nothing to merge).
+ */
+export async function mergePendingForCustomer(who: {
+  name: string;
+  phone: string | null;
+}): Promise<Bill> {
+  const key = tabKey(who.name, who.phone);
+  const [bookingRows, saleRows, entries] = await Promise.all([
+    db.turf_bookings.toArray(),
+    db.snack_sales.toArray(),
+    db.tab_entries.toArray(),
+  ]);
+  const ledger = entries as unknown as TabEntry[];
+
+  const bookings = bookingRows.filter(
+    (b) =>
+      mergeCandidateKey({ name: b.customer_name, phone: b.phone }) === key &&
+      pendingAmount(b as never, { tabEntries: ledger }) > 0,
+  );
+  const chargedTo = new Map<string, string>();
+  for (const e of entries)
+    if (e.kind === "charge" && e.ref_type === TAB_REF_SNACK_SALE && e.ref_id)
+      chargedTo.set(e.ref_id, e.customer_key);
+  const sales = saleRows.filter(
+    (s) =>
+      chargedTo.get(s.id) === key &&
+      pendingAmount(s as never, { tabEntries: ledger }) > 0,
+  );
+  if (bookings.length === 0 || sales.length === 0)
+    throw new Error(
+      "Needs a pending turf booking and a pending snack bill for the same customer",
+    );
+
+  const built = buildMergedItems(bookings as never, sales as never);
+  return mergeIntoBill({
+    name: who.name,
+    phone: who.phone,
+    bookingIds: bookings.map((b) => b.id),
+    saleIds: sales.map((s) => s.id),
+    items: built.items,
+    subtotal: built.subtotal,
+    discount: built.discount,
+    total: built.total,
+    dueMode: "pending",
+  });
+}

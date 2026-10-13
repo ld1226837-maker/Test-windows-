@@ -37,6 +37,23 @@ export type BillRow = {
   tax_lines?: { label: string; value: number }[];
   amount_paid: number;
   status: string;
+  /**
+   * Refund model, shared with turf bookings. Set when this record is
+   * cancelled/voided AFTER money was received (or when a paid bill is moved
+   * back to unpaid): `true` = the money is owed back to the customer (a
+   * liability, never revenue); `false` = the owner keeps it (forfeited, counted
+   * as income when it arrived). UNSET on every legacy cancelled record means
+   * "nothing was kept", exactly how cancelled bills/sales always behaved, so
+   * old data and backups load with unchanged numbers.
+   */
+  is_refundable?: boolean;
+  /** When the refund was paid back (drawer outflow is dated by this day). */
+  refunded_at?: string | null;
+  /** Mode the refund was paid in; a refund with no mode counts as Cash. */
+  refund_mode?: "Cash" | "UPI" | null;
+  /** Amount refunded when it is not simply "everything held" (a paid bill moved
+   * back to unpaid). Unset = the whole held amount. */
+  refund_amount?: number;
   payment_mode?: string | null;
   /** Display-only split of a merged bill (turf advance vs snacks paid). Absent
    * on bills saved before it existed and on non-merged bills. */
@@ -208,6 +225,23 @@ export type SnackSaleRow = {
    * `useVoidSnackSale`; excluded from revenue/dues the same way merged sales
    * are. */
   cancelled?: boolean;
+  /**
+   * Refund model, shared with turf bookings. Set when this record is
+   * cancelled/voided AFTER money was received (or when a paid bill is moved
+   * back to unpaid): `true` = the money is owed back to the customer (a
+   * liability, never revenue); `false` = the owner keeps it (forfeited, counted
+   * as income when it arrived). UNSET on every legacy cancelled record means
+   * "nothing was kept", exactly how cancelled bills/sales always behaved, so
+   * old data and backups load with unchanged numbers.
+   */
+  is_refundable?: boolean;
+  /** When the refund was paid back (drawer outflow is dated by this day). */
+  refunded_at?: string | null;
+  /** Mode the refund was paid in; a refund with no mode counts as Cash. */
+  refund_mode?: "Cash" | "UPI" | null;
+  /** Amount refunded when it is not simply "everything held" (a paid bill moved
+   * back to unpaid). Unset = the whole held amount. */
+  refund_amount?: number;
 };
 
 export type SnackComboRow = {

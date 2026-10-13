@@ -131,11 +131,11 @@ describe("totals order and column clipping", () => {
       expect(calls.some((c) => c.text.includes("Cash Rs 500"))).toBe(true);
       expect(calls.some((c) => c.text.includes("\u20b9"))).toBe(false);
     });
-  it("an On-tab snack sale shows Paid 0, Remaining to be paid and UNPAID", () => {
+  it("an On-tab snack sale shows Paid 0, Remaining to be paid and MOVED TO DUES", () => {
     const d = snackSaleReceipt(sale());
     const get = (l: string) => d.totals.find((t) => t.label === l)?.value;
     expect(get("Remaining to be paid")).toMatch(/45/);
-    expect(get("Status")).toBe("UNPAID");
+    expect(get("Status")).toBe("MOVED TO DUES");
     expect(
       snackSaleReceipt(sale({ payment_mode: "Cash" })).totals.find(
         (t) => t.label === "Status",

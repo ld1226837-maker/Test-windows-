@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -1675,7 +1676,10 @@ export function TurfTab({
                               <Badge
                                 className={paymentStateBadgeClass(paymentState)}
                               >
-                                {paymentStateLabel(paymentState)}
+                                {paymentStateLabel(
+                                  paymentState,
+                                  rowState.due + rowState.onDues,
+                                )}
                               </Badge>
                               {breakdown.status === "Remaining paid" && (
                                 <Badge variant="outline">Remaining paid</Badge>
@@ -1703,7 +1707,7 @@ export function TurfTab({
                                     due > 0 &&
                                     upiId &&
                                     !b.merged_into_bill_id &&
-                                    b.status !== "Cancelled" && (
+                                    isLive(b) && (
                                       <Button
                                         size="touch"
                                         variant="outline"
@@ -1732,7 +1736,7 @@ export function TurfTab({
                                 >
                                   <Pencil className="h-4 w-4" />
                                 </Button>
-                                {b.status === "Cancelled" &&
+                                {isCancelled(b) &&
                                   b.is_refundable === true &&
                                   !b.refunded_at &&
                                   bookingRefundableAdvance(b, tabEntries) >
@@ -1745,7 +1749,7 @@ export function TurfTab({
                                       )}
                                     />
                                   )}
-                                {b.status !== "Cancelled" &&
+                                {isLive(b) &&
                                   !b.merged_into_bill_id &&
                                   !moved && (
                                     <CancelBookingButton
@@ -1791,7 +1795,7 @@ export function TurfTab({
                           {due > 0 &&
                             !moved &&
                             !b.merged_into_bill_id &&
-                            b.status !== "Cancelled" && (
+                            isLive(b) && (
                               <div className="mt-3">
                                 <TurfQuickPayRow booking={b} />
                               </div>

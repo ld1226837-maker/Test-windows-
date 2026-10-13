@@ -37,6 +37,14 @@ describe("layout registry covers what the tabs render", () => {
     expect(partIds.has("money.add-expense.payment-mode")).toBe(true);
     expect(partIds.has("investments.summary.list")).toBe(true);
     expect(partIds.has("investments.summary.total")).toBe(true);
+    // Owner WhatsApp card: recent-bills dropdown, sort bar and sender.
+    for (const id of [
+      "settings.whatsapp.owner-number",
+      "settings.whatsapp.daily-summary",
+      "settings.whatsapp.recent-sort",
+      "settings.whatsapp.recent-bills",
+    ])
+      expect(partIds.has(id)).toBe(true);
   });
   it("every pop-up surface that renders parts is registered, with all its parts", () => {
     const surfaces = new Map(

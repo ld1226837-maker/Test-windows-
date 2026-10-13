@@ -1,3 +1,13 @@
+import { isCancelled } from "./record-state";
+import { receiptTabEntries } from "./receipt-tab";
+import { bookingCashCollected, netTabAmountFor } from "./dues";
+import { TAB_PAYMENT_MODE } from "./ops";
+import {
+  TAB_REF_BILL,
+  TAB_REF_SNACK_SALE,
+  TAB_REF_TURF_BOOKING,
+  type TabEntry,
+} from "./tabs";
 import { jsPDF } from "jspdf";
 import { courtsLabel, storedTurfAmount } from "@/lib/courts";
 import { toast } from "sonner";
@@ -1281,14 +1291,35 @@ function rupeeSafe(doc: ReceiptDoc): ReceiptDoc {
   };
 }
 
-export const billReceipt = (bill: Bill): ReceiptDoc =>
-  rupeeSafe(billReceiptRaw(bill));
-export const bookingReceipt = (b: TurfBooking): ReceiptDoc =>
-  rupeeSafe(bookingReceiptRaw(b));
-export const snackSaleReceipt = (s: SnackSale): ReceiptDoc =>
-  rupeeSafe(snackSaleReceiptRaw(s));
+// The optional ledger argument lets a caller that already holds the tab
+// entries pass them; otherwise the app-wide index (receipt-tab.ts) is used.
+export const billReceipt = (bill: Bill, tabEntries?: TabEntry[]): ReceiptDoc =>
+  rupeeSafe(billReceiptRaw(bill, tabEntries ?? receiptTabEntries()));
+export const bookingReceipt = (
+  b: TurfBooking,
+  tabEntries?: TabEntry[],
+): ReceiptDoc =>
+  rupeeSafe(bookingReceiptRaw(b, tabEntries ?? receiptTabEntries()));
+export const snackSaleReceipt = (
+  s: SnackSale,
+  tabEntries?: TabEntry[],
+): ReceiptDoc =>
+  rupeeSafe(snackSaleReceiptRaw(s, tabEntries ?? receiptTabEntries()));
 
-function billReceiptRaw(bill: Bill): ReceiptDoc {
+/** The printed status word: the SAME vocabulary the Bills screen and the
+ * Excel export use (Cancelled / Moved to dues / Pending / Paid), not the raw
+ * stored word. */
+function billPrintStatus(
+  cancelled: boolean,
+  movedToDues: boolean,
+  due: number,
+): string {
+  if (cancelled) return "CANCELLED";
+  if (movedToDues) return "MOVED TO DUES";
+  return due > 0 ? "PENDING" : "PAID";
+}
+
+function billReceiptRaw(bill: Bill, tabEntries?: TabEntry[]): ReceiptDoc {
   // Printed from the bill's own frozen tax snapshot, never recomputed at
   // print time, so a reprint after a rate change is byte-identical to the
   // copy the customer first received.
@@ -1296,7 +1327,24 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
   const grandTotal = billGrossTotal(bill);
   const taxAmount = grandTotal - rupees(bill.total);
   const paid = billPaidAmount(bill);
-  const due = Math.max(0, grandTotal - paid);
+  const ownDue = Math.max(0, grandTotal - paid);
+  // Money moved to the customer's running tab is owed THERE, not on this
+  // bill: the Bills screen shows it as "Moved to dues" with nothing due, so the
+  // printed / copied / WhatsApp bill must not demand it a second time. A bill
+  // saved "On tab" is wholly on the tab; otherwise it is whatever the ledger
+  // holds against this bill. Without a loaded ledger the record's own fields
+  // are all there is.
+  const cancelledBill = isCancelled(bill);
+  const onTabAmount = cancelledBill
+    ? 0
+    : (bill.payment_mode ?? "") === TAB_PAYMENT_MODE
+      ? ownDue
+      : Math.min(
+          ownDue,
+          tabEntries ? netTabAmountFor(tabEntries, TAB_REF_BILL, bill.id) : 0,
+        );
+  const due = cancelledBill ? 0 : Math.max(0, ownDue - onTabAmount);
+  const movedToDues = ownDue > 0 && onTabAmount > 0 && due === 0;
   const merged = mergedBillBreakdown({
     breakdown: bill.merged_breakdown,
     paid,
@@ -1330,7 +1378,9 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
         : 0,
     paid,
     fmt: pmoney,
-    cancelled: bill.status === "cancelled",
+    cancelled: cancelledBill,
+    onTab: onTabAmount > 0,
+    onTabAmount,
     payments: receiptPaymentRows("bill", bill.id),
     fallbackMode: bill.payment_mode,
     fallbackDate: bill.bill_date,
@@ -1518,7 +1568,10 @@ function billReceiptRaw(bill: Bill): ReceiptDoc {
         : modeValue
           ? [{ label: "Mode", value: modeValue }]
           : []),
-      { label: "Status", value: bill.status.toUpperCase() },
+      {
+        label: "Status",
+        value: billPrintStatus(cancelledBill, movedToDues, due),
+      },
     ],
     note: remainingView.note,
     textMode: showReceived && received.split ? received.split : undefined,
@@ -1592,7 +1645,10 @@ const durationText = (hours: number) => {
   return `${m} min`;
 };
 
-function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
+function bookingReceiptRaw(
+  b: TurfBooking,
+  tabEntries?: TabEntry[],
+): ReceiptDoc {
   const courts = b.courts ?? 1;
   const snacks = b.snacks ?? [];
   const snacksTotal = b.snacks_total ?? 0;
@@ -1614,7 +1670,22 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
   const taxLines = taxLinesWithFallback(taxable, b);
   const grandTotal = bookingGrossTotal(b);
   const taxAmount = grandTotal - taxable;
-  const due = Math.max(0, rupees(grandTotal - b.advance_paid));
+  // "Put balance on tab" writes advance_paid = grand total and posts the
+  // remainder as a tab charge, so advance_paid is not cash in hand. The receipt
+  // prints what was really collected and says the rest is on the tab, exactly
+  // as the Turf screen (bookingDue / bookingCashCollected) does. No-show counts
+  // as cancelled here too, through the one shared isCancelled().
+  const cancelledBooking = isCancelled(b);
+  const onTabAmount =
+    cancelledBooking || !tabEntries
+      ? 0
+      : netTabAmountFor(tabEntries, TAB_REF_TURF_BOOKING, b.id);
+  const paidCash = tabEntries
+    ? bookingCashCollected(b, tabEntries)
+    : b.advance_paid;
+  const due = cancelledBooking
+    ? 0
+    : Math.max(0, rupees(grandTotal - b.advance_paid - onTabAmount));
   const remainingView = remainingSummary({
     grandTotal,
     advances: b.advance_paid
@@ -1623,9 +1694,11 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
           receiptAdvanceAmount("turf_booking", b.id, b.advance_paid),
         )
       : 0,
-    paid: b.advance_paid,
+    paid: paidCash,
     fmt: pmoney,
-    cancelled: /cancel/i.test(String(b.status ?? "")),
+    cancelled: cancelledBooking,
+    onTab: onTabAmount > 0,
+    onTabAmount,
     payments: receiptPaymentRows("turf_booking", b.id),
     fallbackMode: b.payment_mode,
     fallbackDate: b.booking_date,
@@ -1734,7 +1807,7 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
       // them) and an unsettled balance is still printed.
       {
         label: "Paid",
-        value: pmoney(b.advance_paid),
+        value: pmoney(paidCash),
         small: true,
         printHide: true,
       },
@@ -1793,18 +1866,35 @@ function bookingReceiptRaw(b: TurfBooking): ReceiptDoc {
   };
 }
 
-function snackSaleReceiptRaw(s: SnackSale): ReceiptDoc {
+function snackSaleReceiptRaw(
+  s: SnackSale,
+  tabEntries?: TabEntry[],
+): ReceiptDoc {
   const taxLines = taxLinesWithFallback(s.total, s);
   const grandTotal = snackSaleGrossTotal(s);
   const taxAmount = grandTotal - rupees(s.total);
   const snackOnTab = s.payment_mode === "On tab";
+  // What the customer still owes on the tab for THIS sale, by the same rule the
+  // Snacks screen uses (pendingAmount). Without a loaded ledger an "On tab"
+  // sale is taken to owe its whole total.
+  const snackOwed = isCancelled(s)
+    ? 0
+    : tabEntries
+      ? Math.min(
+          grandTotal,
+          netTabAmountFor(tabEntries, TAB_REF_SNACK_SALE, s.id),
+        )
+      : snackOnTab
+        ? grandTotal
+        : 0;
+  const snackStillOnTab = snackOnTab && snackOwed > 0;
   const remainingView = remainingSummary({
     grandTotal,
     advances: 0,
-    paid: snackOnTab ? 0 : grandTotal,
+    paid: snackOnTab ? grandTotal - snackOwed : grandTotal,
     fmt: pmoney,
-    cancelled: Boolean(s.cancelled),
-    onTab: snackOnTab,
+    cancelled: isCancelled(s),
+    onTab: snackStillOnTab,
     payments: receiptPaymentRows("snack_sale", s.id),
     fallbackMode: s.payment_mode,
     fallbackDate: s.sale_date,
@@ -1839,13 +1929,16 @@ function snackSaleReceiptRaw(s: SnackSale): ReceiptDoc {
       ...(s.booking_no
         ? [{ label: "Linked booking", value: s.booking_no }]
         : []),
-      ...(s.cancelled
+      ...(isCancelled(s)
         ? [{ label: "Status", value: "CANCELLED" }]
-        : s.payment_mode === "On tab"
+        : snackOnTab
           ? [
-              { label: "Paid", value: pmoney(0) },
+              { label: "Paid", value: pmoney(grandTotal - snackOwed) },
               ...remainingView.remainingRows,
-              { label: "Status", value: "UNPAID" },
+              {
+                label: "Status",
+                value: snackStillOnTab ? "MOVED TO DUES" : "PAID",
+              },
             ]
           : [
               { label: "Paid", value: pmoney(grandTotal) },
@@ -1854,7 +1947,7 @@ function snackSaleReceiptRaw(s: SnackSale): ReceiptDoc {
             ]),
     ],
     note: joinNotes(s.notes, remainingView.note),
-    balanceDue: !s.cancelled && s.payment_mode === "On tab" ? grandTotal : 0,
+    balanceDue: snackStillOnTab ? snackOwed : 0,
     fileName: `${safeFilePart(s.bill_no)}-snacks`,
   };
 }

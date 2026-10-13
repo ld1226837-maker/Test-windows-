@@ -1,5 +1,7 @@
 import { usePayments } from "./data";
 import { setReceiptPayments } from "./payments";
+import { setReceiptTabEntries } from "./receipt-tab";
+import { useTabEntries } from "./tabs";
 
 /** Keeps the receipts' payment lookup in step with the payments on screen.
  * Mount once, high in the app.
@@ -13,4 +15,9 @@ import { setReceiptPayments } from "./payments";
 export function useReceiptPaymentIndex() {
   const { data } = usePayments();
   setReceiptPayments(data);
+  // Same idea for the running tab: receipts show money moved to the tab, not a
+  // second demand for it. useTabEntries() starts as [] and refetches on mount,
+  // so a never-loaded ledger is not mistaken for an empty one by receipts.
+  const { data: tabEntries, isFetched } = useTabEntries();
+  setReceiptTabEntries(isFetched ? tabEntries : undefined);
 }

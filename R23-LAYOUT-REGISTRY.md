@@ -30,3 +30,11 @@ was compared with `LAYOUT_REGISTRY` (`layout-prefs.ts`) and `SECTION_PARTS` (`la
 merge-customers, archive-year, booking-extras), `settings.billing.*`, `settings.turf-rates.*`,
 `customers.teams.list`, `home.calendar.widget`. They are listed in the registry but have no
 `<LayoutPart>` in the UI, so they cannot be arranged yet.
+
+## Owner WhatsApp card: recent bills (Settings > WhatsApp summary)
+`settings.whatsapp` now has registered parts, wrapped in `<LayoutParts>` in `WhatsAppSummaryCard.tsx`:
+- `settings.whatsapp.owner-number` (locked: the number every Send uses)
+- `settings.whatsapp.daily-summary` (Send today's summary button)
+- `settings.whatsapp.recent-sort` (Recent bills header, day chips, sort)
+- `settings.whatsapp.recent-bills` (the 3-day bill list with a Send button per row; rows live inside this part)
+Coverage test updated (`layout-registry-coverage.test.ts`). List logic and message text: `src/lib/owner-bills.ts`.

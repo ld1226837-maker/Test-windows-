@@ -12,6 +12,8 @@ import {
 import { INVOICE_SECTIONS, type InvoiceSection } from "@/lib/desktop";
 import { usePrintSettings } from "@/lib/print";
 import { upiUri } from "@/lib/receipt-upi";
+import { billDue } from "@/lib/dues";
+import { useTabEntries } from "@/lib/tabs";
 import { UpiPayDialog } from "./UpiPayDialog";
 import { describeError } from "@/lib/error-capture";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -36,10 +38,10 @@ export function BillActions({
   const { settings } = usePrintSettings();
   const [upiOpen, setUpiOpen] = useState(false);
   const upiId = settings.upiId.trim();
-  const due = Math.max(
-    0,
-    (bill?.total ?? 0) + (bill?.tax_amount ?? 0) - (bill?.amount_paid ?? 0),
-  );
+  // The one shared "money still owed on this bill" (tax-inclusive, net of
+  // money moved to the running tab), not a hand-written total + tax - paid.
+  const { data: tabEntries = [] } = useTabEntries();
+  const due = bill ? billDue(bill, tabEntries) : 0;
 
   return (
     <>

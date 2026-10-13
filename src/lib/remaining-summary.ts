@@ -85,6 +85,9 @@ export type RemainingArgs = {
   cancelled?: boolean | undefined;
   /** Balance moved onto the customer's running tab. */
   onTab?: boolean | undefined;
+  /** Part of the balance that sits on the tab (defaults to all of
+   * `remaining` when `onTab` is set). */
+  onTabAmount?: number | undefined;
   /** Payment rows on file for the record, when there are any. */
   payments?: PaymentLine[] | undefined;
   /** Used only when there are no payment rows. */
@@ -250,7 +253,7 @@ function paymentNote(
       : `Remaining ${a.fmt(0)} - settled in full.`;
 
   if (a.onTab && remaining > 0)
-    return `${a.fmt(remaining)} moved to the customer's tab. ${tail}`;
+    return `${a.fmt(Math.min(remaining, a.onTabAmount ?? remaining))} moved to the customer's tab. ${tail}`;
 
   const groups = batches(completeRows(a));
   // "Rs 654 via Cash Rs 644 + UPI Rs 10 on 11-10-2026" - every mode of the

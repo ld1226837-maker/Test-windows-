@@ -1,3 +1,4 @@
+import { pendingLabel } from "@/lib/bill-state";
 import {
   memo,
   useCallback,
@@ -204,7 +205,7 @@ const CustomerRow = memo(function CustomerRow({
           </Badge>
           {tabDue > 0 && (
             <Badge variant="destructive" className="shrink-0 text-[11px]">
-              On tab {money(tabDue)}
+              {pendingLabel(tabDue)}
             </Badge>
           )}
         </div>

@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { localDateStr } from "./utils";
 import { db } from "./localdb";
 import { exportToExcel } from "./xlsx";
 import { downloadReportPdf } from "./report-pdf";
@@ -71,7 +72,7 @@ const NAME_CONTACT_COLUMNS: (keyof TeamNameContactRow)[] = [
   "Contact No",
 ];
 
-const dateStamp = () => new Date().toISOString().slice(0, 10);
+const dateStamp = () => localDateStr();
 
 /** Same CSV rules as the customer export: quote when needed, and neutralise
  * spreadsheet formula injection while keeping phone numbers as text. */

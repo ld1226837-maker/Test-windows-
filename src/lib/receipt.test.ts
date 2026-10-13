@@ -291,9 +291,9 @@ describe("billReceipt() — merged/QuickPay bill invoices", () => {
     ).toBeUndefined();
   });
 
-  it("shows the Status in upper case exactly as the app names it", () => {
+  it("prints the Status in the same words as the Bills screen and Excel", () => {
     const bill = makeBill({ status: "unpaid" });
-    expect(getTotal(billReceipt(bill), "Status")).toBe("UNPAID");
+    expect(getTotal(billReceipt(bill), "Status")).toBe("PENDING");
   });
 });
 

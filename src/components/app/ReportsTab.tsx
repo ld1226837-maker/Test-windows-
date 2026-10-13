@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -39,7 +40,6 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   balanceOf,
   billGrossTotal,
-  billPaidAmount,
   formatDMY,
   money,
   whatsappUrl,
@@ -85,6 +85,7 @@ import {
   turfOccupancy,
   type Sources,
 } from "@/lib/analytics";
+import { billExportStatus } from "@/lib/bill-export";
 import { activeTaxes, readAppSettings } from "@/lib/settings";
 import {
   billCollected,
@@ -392,7 +393,7 @@ export function ReportsTab() {
       buildPaymentModeLookup(
         "bill",
         bills
-          .filter((b) => b.status !== "cancelled")
+          .filter((b) => isLive(b))
           .map((b) => ({
             id: b.id,
             collected: billCollected(b, appSettings),
@@ -464,7 +465,7 @@ export function ReportsTab() {
         // Mirrors the Turf bookings sheet's "Status" column — a snack sale
         // has no multi-value status of its own, just sold vs. voided (see
         // SnackSale.cancelled in ops.ts).
-        Status: s.cancelled ? "Cancelled" : "",
+        Status: isCancelled(s) ? "Cancelled" : "",
         "Merged into bill": s.merged_into_bill_id ? "Yes — see Bills" : "No",
         // Money only on a sale's first item row so a SUM never repeats it.
         "Paid - Cash": i === 0 ? cols["Paid - Cash"] : 0,
@@ -494,9 +495,7 @@ export function ReportsTab() {
         Phone: b.customer_phone ?? "",
         Subtotal: Number(b.subtotal) || 0,
         Total: billGrossTotal(b),
-        Paid: billPaidAmount(b),
-        Balance: balanceOf(b),
-        Status: b.status,
+        ...billExportStatus(b, tabEntries),
         // A merged bill is the one place its turf bookings' and snack
         // sales' money now lives, so its Cash / Online / split is here.
         "Merged bill": merged ? "Yes" : "No",

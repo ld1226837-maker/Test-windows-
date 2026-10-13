@@ -1,4 +1,5 @@
 import { money, rupees } from "./money";
+import { readAppSettings, taxBreakdown } from "./settings";
 import { isOnlinePaymentMode } from "./ops";
 import {
   db,
@@ -317,21 +318,27 @@ export async function recordPayment(
     // dependency chain, so pulling it back into the ledger would create a
     // runtime initialization cycle. All three persisted parents carry a
     // frozen tax snapshot, so their immutable gross ceiling is the taxable
-    // amount plus that stored tax.
+    // amount plus that stored tax. A row from before tax was frozen has no
+    // snapshot: it is taxed at the live rate, exactly as grossWithTax() (and so
+    // the printed Grand Total) does, so collecting the printed total is never
+    // refused. `settings.ts` only imports money, so it is safe to use here.
+    const grossOf = (taxable: unknown, tax: unknown) => {
+      const base = rupees(Number(taxable));
+      return typeof tax === "number"
+        ? rupees(base + tax)
+        : rupees(base + taxBreakdown(base, readAppSettings()).taxAmount);
+    };
     const gross =
       parentType === "bill"
-        ? rupees(
-            Number((parent as BillRow).total) +
-              Number((parent as BillRow).tax_amount || 0),
-          )
+        ? grossOf((parent as BillRow).total, (parent as BillRow).tax_amount)
         : parentType === "turf_booking"
-          ? rupees(
-              Number((parent as TurfBookingRow).total_amount) +
-                Number((parent as TurfBookingRow).tax_amount || 0),
+          ? grossOf(
+              (parent as TurfBookingRow).total_amount,
+              (parent as TurfBookingRow).tax_amount,
             )
-          : rupees(
-              Number((parent as SnackSaleRow).total) +
-                Number((parent as SnackSaleRow).tax_amount || 0),
+          : grossOf(
+              (parent as SnackSaleRow).total,
+              (parent as SnackSaleRow).tax_amount,
             );
     if (total > gross + 0.001) {
       throw new Error(

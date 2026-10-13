@@ -15,6 +15,7 @@
  * `totalCourts`; the count (`courts`) drives money and utilisation, the ids
  * drive occupancy and audit.
  */
+import { isCancelled, isLive } from "./bill-state";
 import { businessMinutes, parseMinutes } from "@/lib/time-slot-utils";
 import { rupees } from "@/lib/money";
 
@@ -82,7 +83,7 @@ export function buildOccupancy(
   const yesterday = prevDayKey(date);
   const tomorrow = nextDayKey(date);
   for (const b of bookings) {
-    if (b.status === "Cancelled") continue;
+    if (isCancelled(b)) continue;
     if (excludeId && b.id === excludeId) continue;
     const sameDay = b.booking_date === date;
     const dayBefore = yesterday !== null && b.booking_date === yesterday;
@@ -301,7 +302,7 @@ export function resolveCourtIds(
   const clash = (c: string, iv: [number, number]) =>
     busy.get(c)!.some(([s, e]) => iv[0] < e && s < iv[1]);
 
-  const live = bookings.filter((b) => b.status !== "Cancelled" && b.id);
+  const live = bookings.filter((b) => isLive(b) && b.id);
   const pending: WithCourtIds[] = [];
   for (const b of live) {
     const ids = validStored(b, valid);

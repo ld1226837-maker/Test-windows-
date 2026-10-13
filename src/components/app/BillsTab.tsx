@@ -7,6 +7,7 @@ import {
   Users,
   Ban,
 } from "lucide-react";
+import { billExportStatus } from "@/lib/bill-export";
 import { exportToExcel } from "@/lib/xlsx";
 import { INVOICE_SECTIONS } from "@/lib/desktop";
 import {
@@ -42,7 +43,6 @@ import {
   useDeleteBill,
   useUnmergeBill,
   useUpdateBill,
-  useVoidBill,
 } from "@/lib/data";
 import {
   billCollected,
@@ -70,6 +70,9 @@ import { TodaySummaryCard } from "./TodaySummaryCard";
 import { QuickPayRow } from "./QuickPayRow";
 import { CustomerDetailDialog } from "./CustomerDetailDialog";
 import { ConfirmDeleteButton } from "./ConfirmDeleteButton";
+import { CancelInvoiceDialog } from "./CancelInvoiceDialog";
+import { MoneyDecisionDialog } from "./MoneyDecisionDialog";
+import { isCancelled, isLive, pendingAmount } from "@/lib/bill-state";
 import { ListDisclosure } from "./ListDisclosure";
 import { SectionHeading } from "./SectionHeading";
 import { SortMenu } from "./SortMenu";
@@ -86,14 +89,14 @@ type BillSortField = "date" | "customer" | "balance" | "total";
 const BILL_SORT_OPTIONS: SortOption<BillSortField>[] = [
   { value: "date", label: "Date", defaultDir: "desc" },
   { value: "customer", label: "Customer", defaultDir: "asc" },
-  { value: "balance", label: "Remaining to be paid", defaultDir: "desc" },
+  { value: "balance", label: "Pending", defaultDir: "desc" },
   { value: "total", label: "Total", defaultDir: "desc" },
 ];
 
 type LedgerSortField = "due" | "name" | "date";
 
 const LEDGER_SORT_OPTIONS: SortOption<LedgerSortField>[] = [
-  { value: "due", label: "Remaining to be paid", defaultDir: "desc" },
+  { value: "due", label: "Pending", defaultDir: "desc" },
   { value: "name", label: "Name (A–Z)", defaultDir: "asc" },
   { value: "date", label: "Most recent bill", defaultDir: "desc" },
 ];
@@ -104,7 +107,10 @@ export function BillsTab() {
   const settleBill = useSettleBill();
   const deleteBill = useDeleteBill();
   const unmergeBillMut = useUnmergeBill();
-  const voidBillMut = useVoidBill();
+  // Cancel pop-up (invoice id) and the refund-or-keep question for marking a
+  // paid bill unpaid.
+  const [cancelBillId, setCancelBillId] = useState<string | null>(null);
+  const [unpaidAsk, setUnpaidAsk] = useState<Bill | null>(null);
   const { data: tabEntries = [] } = useTabEntries();
   const { data: payments = [] } = usePayments();
   const { data: allBookings = [] } = useTurfBookings();
@@ -164,7 +170,7 @@ export function BillsTab() {
         .map((b) => ({
           b,
           customerKey: b.customer_name.toLowerCase(),
-          balanceKey: balanceOf(b),
+          balanceKey: billDue(b, tabEntries),
           totalKey: billGrossTotal(b),
           dateKey: dayKey(b.bill_date),
         }))
@@ -182,7 +188,17 @@ export function BillsTab() {
           }
         })
         .map(({ b }) => b),
-    [bills, deferredQ, status, from, to, pickedDate, sort.field, sort.dir],
+    [
+      bills,
+      tabEntries,
+      deferredQ,
+      status,
+      from,
+      to,
+      pickedDate,
+      sort.field,
+      sort.dir,
+    ],
   );
 
   const PAGE_SIZE = 25;
@@ -257,7 +273,7 @@ export function BillsTab() {
 
   const OVERDUE_DAYS = 7;
   const isOverdue = (b: Bill) =>
-    balanceOf(b) > 0 &&
+    billDue(b, tabEntries) > 0 &&
     (Date.now() - new Date(b.bill_date).getTime()) / 86400000 > OVERDUE_DAYS;
 
   // Cash / Online / split columns for the Excel exports — the same payment
@@ -268,7 +284,7 @@ export function BillsTab() {
     return buildPaymentModeLookup(
       "bill",
       bills
-        .filter((b) => b.status !== "cancelled")
+        .filter((b) => isLive(b))
         .map((b) => ({
           id: b.id,
           collected: billCollected(b, settings),
@@ -286,9 +302,7 @@ export function BillsTab() {
       Customer: b.customer_name,
       Phone: b.customer_phone ?? "",
       Total: billGrossTotal(b),
-      Paid: billPaidAmount(b),
-      Balance: balanceOf(b),
-      Status: b.status,
+      ...billExportStatus(b, tabEntries),
       ...billModes(b.id),
     }));
 
@@ -335,6 +349,12 @@ export function BillsTab() {
         // Cash) rather than only flipping the status.
         await settleBill.mutateAsync({ bill, tabEntries });
       } else {
+        // Money already received must be refunded explicitly; it is never
+        // silently dropped (see updateBillStatus in lib/data.ts).
+        if (next === "unpaid" && billCollected(bill) > 0) {
+          setUnpaidAsk(bill);
+          return;
+        }
         await updateBill.mutateAsync({
           id: bill.id,
           status: next,
@@ -489,9 +509,7 @@ export function BillsTab() {
                             Subtotal: Number(b.subtotal) || 0,
                             Discount: Number(b.discount) || 0,
                             Total: billGrossTotal(b),
-                            Paid: billPaidAmount(b),
-                            Balance: balanceOf(b),
-                            Status: b.status,
+                            ...billExportStatus(b, tabEntries),
                             ...billModes(b.id),
                           })),
                           `bills-${sortSuffix(sort.field, sort.dir)}`,
@@ -622,7 +640,7 @@ export function BillsTab() {
                   <section className="space-y-3">
                     {pageBills.map((bill) => {
                       const moved = billMovedToDues(bill, tabEntries);
-                      const cancelled = bill.status === "cancelled";
+                      const cancelled = isCancelled(bill);
                       const dueNo = moved
                         ? dueNoForRef(
                             tabEntries,
@@ -678,7 +696,10 @@ export function BillsTab() {
                                     bill.status,
                                   )}
                                 >
-                                  {paymentStateLabel(bill.status)}
+                                  {paymentStateLabel(
+                                    bill.status,
+                                    pendingAmount(bill, { tabEntries }),
+                                  )}
                                 </Badge>
                                 {isOverdue(bill) && (
                                   <Badge
@@ -692,11 +713,7 @@ export function BillsTab() {
                                   <Badge variant="secondary">
                                     Moved to dues · {dueNo}
                                   </Badge>
-                                ) : (
-                                  bill.payment_mode === "On tab" && (
-                                    <Badge variant="secondary">On tab</Badge>
-                                  )
-                                )}
+                                ) : null}
                                 {mergedBillIds.has(bill.id) && (
                                   <Badge variant="outline">Merged</Badge>
                                 )}
@@ -839,27 +856,16 @@ export function BillsTab() {
                                     </SelectItem>
                                   </SelectContent>
                                 </Select>
-                                <ConfirmDeleteButton
+                                <Button
+                                  variant="ghost"
                                   size="icon"
                                   className="size-12 text-muted-foreground"
-                                  iconClassName="size-5"
-                                  ariaLabel="Void bill"
-                                  icon={Ban}
-                                  confirmLabel="Void bill"
-                                  title={`Void bill ${bill.invoice_no}?`}
-                                  description={`This cancels ${bill.invoice_no} for ${bill.customer_name} — any merged bookings or snack bills go back to owing their own balance, and it stops counting toward revenue or dues. The record stays for history; this doesn't delete it.`}
+                                  aria-label="Cancel bill"
                                   disabled={moved}
-                                  onConfirm={() =>
-                                    voidBillMut.mutate(bill.id, {
-                                      onSuccess: () =>
-                                        toast.success(
-                                          `${bill.invoice_no} cancelled`,
-                                        ),
-                                      onError: (e) =>
-                                        toast.error(errorMessage(e)),
-                                    })
-                                  }
-                                />
+                                  onClick={() => setCancelBillId(bill.id)}
+                                >
+                                  <Ban className="size-5" />
+                                </Button>
                                 <ConfirmDeleteButton
                                   size="icon"
                                   className="size-12 text-destructive"
@@ -914,6 +920,47 @@ export function BillsTab() {
           </>
         </LayoutSection>
       </LayoutSections>
+      <CancelInvoiceDialog
+        billId={cancelBillId}
+        onOpenChange={(open) => {
+          if (!open) setCancelBillId(null);
+        }}
+      />
+      <MoneyDecisionDialog
+        open={unpaidAsk !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnpaidAsk(null);
+        }}
+        title={`Mark ${unpaidAsk?.invoice_no ?? "bill"} unpaid?`}
+        intro="Money has already been received on this bill."
+        amount={unpaidAsk ? billCollected(unpaidAsk) : 0}
+        refundText="Refund it - mark the bill unpaid and pay the money back"
+        keepText="Keep it - leave the bill as it is"
+        confirmLabel="Confirm"
+        busy={updateBill.isPending}
+        onConfirm={async (d) => {
+          const bill = unpaidAsk;
+          if (!bill) return;
+          if (d.decision === "keep") {
+            setUnpaidAsk(null);
+            toast.message("Kept - the bill was left as it is");
+            return;
+          }
+          try {
+            await updateBill.mutateAsync({
+              id: bill.id,
+              status: "unpaid",
+              amount_paid: 0,
+              refund: d.refund_mode ? { refund_mode: d.refund_mode } : {},
+            });
+            toast.success("Marked unpaid - the money was refunded");
+          } catch (e) {
+            toast.error(`Couldn't update status: ${errorMessage(e)}`);
+          } finally {
+            setUnpaidAsk(null);
+          }
+        }}
+      />
     </div>
   );
 }

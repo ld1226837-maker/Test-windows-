@@ -23,6 +23,7 @@ import {
   type TaxSnapshot,
 } from "./biz";
 import { rupees } from "./money";
+import { isCancelled, pendingLabel } from "./record-state";
 import { TAB_PAYMENT_MODE, type SnackSale, type TurfBooking } from "./ops";
 
 import {
@@ -107,8 +108,7 @@ export const isTabCashPayment = (e: Pick<TabEntry, "kind" | "ref_type">) =>
  */
 export const isFinancialBooking = (
   b: Pick<TurfBooking, "status" | "merged_into_bill_id">,
-) =>
-  b.status !== "Cancelled" && b.status !== "No-show" && !b.merged_into_bill_id;
+) => !isCancelled(b) && !b.merged_into_bill_id;
 
 /**
  * Snack sales rolled into a merged bill stay in the database (their tab
@@ -122,7 +122,7 @@ export const isFinancialBooking = (
  */
 export const isFinancialSale = (
   s: Pick<SnackSale, "merged_into_bill_id" | "cancelled">,
-) => !s.merged_into_bill_id && !s.cancelled;
+) => !s.merged_into_bill_id && !isCancelled(s);
 
 /** Structural shape `bookingDue` needs — narrower than the full `TurfBooking`
  * so callers with a partial/projected booking (e.g. `customerLifetimeStats`
@@ -227,12 +227,14 @@ const isForfeited = (b: Pick<TurfBooking, "is_refundable">) =>
 /** F-9: an advance is kept by the business for a cancelled non-refundable
  * booking, or for ANY no-show booking (the slot was never delivered). */
 const isForfeitedBooking = (
-  b: Pick<TurfBooking, "status" | "is_refundable">,
-): boolean =>
-  (b.status === "Cancelled" || b.status === "No-show") && isForfeited(b);
+  b: Pick<TurfBooking, "status" | "is_refundable" | "merged_into_bill_id">,
+): boolean => isCancelled(b) && !b.merged_into_bill_id && isForfeited(b);
 
 export function bookingForfeitedRevenue(
-  b: Pick<TurfBooking, "id" | "status" | "advance_paid" | "is_refundable">,
+  b: Pick<
+    TurfBooking,
+    "id" | "status" | "advance_paid" | "is_refundable" | "merged_into_bill_id"
+  >,
   entries: TabEntry[] = [],
 ): number {
   // F-9 (owner decision 2026-09): a No-show booking whose customer paid an
@@ -265,12 +267,25 @@ export function bookingForfeitedRevenue(
 export function bookingRefundableAdvance(
   b: Pick<
     TurfBooking,
-    "id" | "status" | "advance_paid" | "is_refundable" | "refunded_at"
+    | "id"
+    | "status"
+    | "advance_paid"
+    | "is_refundable"
+    | "refunded_at"
+    | "merged_into_bill_id"
   >,
   entries: TabEntry[] = [],
 ): number {
   // K4: once the refund has actually been paid back, the liability is gone.
-  if (b.status !== "Cancelled" || isForfeited(b) || b.refunded_at) return 0;
+  // A cancelled No-show can be refunded too (one cancelled model); money on a
+  // merged source lives on its bill, never here.
+  if (
+    !isCancelled(b) ||
+    b.merged_into_bill_id ||
+    isForfeited(b) ||
+    b.refunded_at
+  )
+    return 0;
   return Math.max(0, round2(bookingCashCollected(b, entries)));
 }
 
@@ -280,11 +295,22 @@ export function bookingRefundableAdvance(
 export function bookingRefundOutflow(
   b: Pick<
     TurfBooking,
-    "id" | "status" | "advance_paid" | "is_refundable" | "refunded_at"
+    | "id"
+    | "status"
+    | "advance_paid"
+    | "is_refundable"
+    | "refunded_at"
+    | "merged_into_bill_id"
   >,
   entries: TabEntry[] = [],
 ): number {
-  if (b.status !== "Cancelled" || isForfeited(b) || !b.refunded_at) return 0;
+  if (
+    !isCancelled(b) ||
+    b.merged_into_bill_id ||
+    isForfeited(b) ||
+    !b.refunded_at
+  )
+    return 0;
   return Math.max(0, round2(bookingCashCollected(b, entries)));
 }
 
@@ -299,6 +325,7 @@ export function bookingRefundCashOut(
     | "is_refundable"
     | "refunded_at"
     | "refund_mode"
+    | "merged_into_bill_id"
   >,
   entries: TabEntry[] = [],
 ): number {
@@ -347,7 +374,7 @@ export function billDue(bill: Bill, entries: TabEntry[] = []) {
   // in biz.ts. Its sources (if any) already got their own dues back via
   // unmergeBill(id, { cancel: true }), so counting a due here too would
   // double the same money.
-  if (bill.status === "cancelled") return 0;
+  if (isCancelled(bill)) return 0;
   if ((bill.payment_mode ?? "") === TAB_PAYMENT_MODE) return 0;
   const onTab = netTabAmountFor(entries, TAB_REF_BILL, bill.id);
   return Math.max(0, round2(balanceOf(bill) - onTab));
@@ -360,7 +387,7 @@ export function billDue(bill: Bill, entries: TabEntry[] = []) {
  * out; payment happens from the Dues tab.
  */
 export function billMovedToDues(bill: Bill, entries: TabEntry[] = []) {
-  if (bill.status === "cancelled") return false;
+  if (isCancelled(bill)) return false;
   return balanceOf(bill) > 0 && billDue(bill, entries) === 0;
 }
 
@@ -526,6 +553,84 @@ export function customerOutstanding(
   };
 }
 
+/** One customer who owes something, as the Outstanding screen lists them. */
+export type PendingIdentity = {
+  key: string;
+  name: string;
+  phone: string | null;
+  dues: CustomerDues;
+};
+
+/**
+ * EVERY customer who owes money, and the grand total - the one function behind
+ * the Outstanding screen and the Dashboard "Pending dues" card, so the two can
+ * never disagree. Identities come from saved customers, open tabs AND the
+ * owners of pending bookings/bills, so a walk-in who was never saved as a
+ * contact is still listed. A running-tab key with no name falls back to the
+ * phone/name encoded in the key, so its money is never dropped from the list.
+ */
+export function pendingMoneyIndex(src: {
+  customers?: readonly { name: string; phone?: string | null }[];
+  tabs?: readonly {
+    customer_key: string;
+    customer_name?: string | null;
+    phone?: string | null;
+  }[];
+  bills?: Bill[];
+  bookings?: TurfBooking[];
+  tabEntries?: TabEntry[];
+}): { rows: PendingIdentity[]; total: number } {
+  const identities = new Map<string, { name: string; phone: string | null }>();
+  for (const c of src.customers ?? [])
+    identities.set(tabKey(c.name, c.phone ?? null), {
+      name: c.name,
+      phone: c.phone ?? null,
+    });
+  for (const t of src.tabs ?? []) {
+    if (identities.has(t.customer_key) || !t.customer_name) continue;
+    identities.set(t.customer_key, {
+      name: t.customer_name,
+      phone: t.phone ?? null,
+    });
+  }
+  for (const b of src.bookings ?? []) {
+    const key = tabKey(b.customer_name, b.phone ?? null);
+    if (!identities.has(key) && b.customer_name)
+      identities.set(key, { name: b.customer_name, phone: b.phone ?? null });
+  }
+  for (const b of src.bills ?? []) {
+    const key = tabKey(b.customer_name, b.customer_phone ?? null);
+    if (!identities.has(key) && b.customer_name)
+      identities.set(key, {
+        name: b.customer_name,
+        phone: b.customer_phone ?? null,
+      });
+  }
+  for (const e of src.tabEntries ?? []) {
+    if (identities.has(e.customer_key)) continue;
+    const raw = e.customer_key.slice(2);
+    const isPhone = e.customer_key.startsWith("p:");
+    identities.set(e.customer_key, {
+      name: raw || "Customer",
+      phone: isPhone ? raw : null,
+    });
+  }
+  const index = customerOutstandingIndex([...identities.values()], {
+    bills: src.bills ?? [],
+    bookings: src.bookings ?? [],
+    tabEntries: src.tabEntries ?? [],
+  });
+  const rows: PendingIdentity[] = [];
+  let total = 0;
+  for (const [key, who] of identities) {
+    const dues = index.get(tabKey(who.name, who.phone));
+    if (!dues || dues.total <= 0) continue;
+    rows.push({ key, name: who.name, phone: who.phone, dues });
+    total += dues.total;
+  }
+  return { rows, total: round2(total) };
+}
+
 /**
  * Money actually received against a bill.
  *
@@ -585,7 +690,7 @@ export function billCollected(
   // A void bill never counts as revenue, even if it shows an old
   // `amount_paid` left over from before it was cancelled (kept only for
   // the historical record — see BillStatus in biz.ts).
-  if (bill.status === "cancelled") return 0;
+  if (isCancelled(bill)) return 0;
   if ((bill.payment_mode ?? "") === TAB_PAYMENT_MODE)
     return Math.max(0, rupees(bill.amount_paid));
   // A bill marked paid has a zero balance, so its collected amount is the full
@@ -607,7 +712,7 @@ export function snackSaleCollected(
   // A voided sale never counts as revenue, even if it shows an old
   // `payment_mode` left over from before it was cancelled — mirror of
   // billCollected()'s `status === "cancelled"` early return.
-  if (s.cancelled) return 0;
+  if (isCancelled(s)) return 0;
   return s.payment_mode === TAB_PAYMENT_MODE
     ? 0
     : snackSaleGrossTotal(s, settings);
@@ -619,23 +724,27 @@ export function snackSaleCollected(
 export function saleStateLabel(
   s: Pick<SnackSale, "merged_into_bill_id" | "payment_mode" | "cancelled">,
   invoiceNo?: string | null,
+  /** What is still owed on the sale (tab balance); shown as "Pending Rs X". */
+  pending?: number,
 ) {
-  if (s.cancelled) return "Cancelled";
+  if (isCancelled(s)) return "Cancelled";
   if (s.merged_into_bill_id)
     return invoiceNo ? `Merged into ${invoiceNo}` : "Merged into bill";
-  if (s.payment_mode === TAB_PAYMENT_MODE) return "On tab";
+  if (s.payment_mode === TAB_PAYMENT_MODE)
+    return pending === undefined ? "Pending" : pendingLabel(pending);
   return null;
 }
 
-/** Human label for a booking's tab/merge state (used by the Turf list). */
+/** Human label for a booking's merge state (used by the Turf list). Money
+ * still owed - including a balance moved onto the tab - is the Pending badge
+ * (paymentStateLabel), so there is no second "On tab" chip. */
 export function bookingStateLabel(
   b: Pick<TurfBooking, "id" | "merged_into_bill_id">,
-  entries: TabEntry[] = [],
+  _entries: TabEntry[] = [],
   invoiceNo?: string | null,
 ) {
   if (b.merged_into_bill_id)
     return invoiceNo ? `Merged into ${invoiceNo}` : "Merged into bill";
-  if (netTabAmountFor(entries, TAB_REF_TURF_BOOKING, b.id) > 0) return "On tab";
   return null;
 }
 
@@ -747,3 +856,103 @@ export function groupTabLedger(
     (a, b) => b.net - a.net || b.date.localeCompare(a.date),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Refund model for invoices and snack sales (mirror of the turf-booking one).
+//
+// A bill/sale cancelled AFTER money arrived records the owner's choice in the
+// optional `is_refundable` field: `true` = owed back (liability, never income),
+// `false` = kept (forfeited, income on the day it arrived). `undefined` is
+// every legacy cancelled record and means "nothing was kept" - exactly how a
+// cancelled bill/sale always counted - so old data and backups keep their
+// numbers. Payment rows are never deleted by this model.
+// ---------------------------------------------------------------------------
+
+type RefundShape = {
+  is_refundable?: boolean | undefined;
+  refunded_at?: string | null | undefined;
+  refund_mode?: "Cash" | "UPI" | null | undefined;
+  refund_amount?: number | undefined;
+};
+
+/** Money a cancelled bill still holds because the owner decided what to do
+ * with it. The cancel flow freezes `amount_paid` to what was really received. */
+export function billHeldMoney(
+  bill: Pick<Bill, "status" | "amount_paid"> & RefundShape,
+): number {
+  if (!isCancelled(bill) || bill.is_refundable === undefined) return 0;
+  return Math.max(0, rupees(bill.amount_paid));
+}
+
+export const billForfeitedRevenue = (
+  bill: Pick<Bill, "status" | "amount_paid"> & RefundShape,
+) => (bill.is_refundable === false ? billHeldMoney(bill) : 0);
+
+export const billRefundableAmount = (
+  bill: Pick<Bill, "status" | "amount_paid"> & RefundShape,
+) =>
+  bill.is_refundable === true && !bill.refunded_at ? billHeldMoney(bill) : 0;
+
+/** Money already paid back on a bill: the whole held amount for a cancelled
+ * bill, or `refund_amount` for a live bill moved back to unpaid. */
+export function billRefundOutflow(
+  bill: Pick<Bill, "status" | "amount_paid"> & RefundShape,
+): number {
+  if (!bill.refunded_at) return 0;
+  if (bill.refund_amount !== undefined)
+    return Math.max(0, rupees(bill.refund_amount));
+  return bill.is_refundable === true ? billHeldMoney(bill) : 0;
+}
+
+export const billRefundCashOut = (
+  bill: Pick<Bill, "status" | "amount_paid"> & RefundShape,
+) => ((bill.refund_mode ?? "Cash") === "Cash" ? billRefundOutflow(bill) : 0);
+
+/** Money a voided snack sale still holds (a paid sale only; "On tab" owed
+ * nothing in hand). */
+export function saleHeldMoney(
+  s: Pick<
+    SnackSale,
+    | "payment_mode"
+    | "total"
+    | "tax_amount"
+    | "tax_lines"
+    | "cancelled"
+    | "merged_into_bill_id"
+  > &
+    RefundShape,
+  settings?: Parameters<typeof snackSaleGrossTotal>[1],
+): number {
+  // Money on a merged source lives on its bill, never on the source itself.
+  if (s.merged_into_bill_id) return 0;
+  if (!isCancelled(s) || s.is_refundable === undefined) return 0;
+  if (s.payment_mode === TAB_PAYMENT_MODE) return 0;
+  return Math.max(0, round2(snackSaleGrossTotal(s, settings)));
+}
+
+export const saleForfeitedRevenue = (
+  s: Parameters<typeof saleHeldMoney>[0],
+  settings?: Parameters<typeof snackSaleGrossTotal>[1],
+) => (s.is_refundable === false ? saleHeldMoney(s, settings) : 0);
+
+export const saleRefundableAmount = (
+  s: Parameters<typeof saleHeldMoney>[0],
+  settings?: Parameters<typeof snackSaleGrossTotal>[1],
+) =>
+  s.is_refundable === true && !s.refunded_at ? saleHeldMoney(s, settings) : 0;
+
+export function saleRefundOutflow(
+  s: Parameters<typeof saleHeldMoney>[0],
+  settings?: Parameters<typeof snackSaleGrossTotal>[1],
+): number {
+  if (!s.refunded_at) return 0;
+  if (s.refund_amount !== undefined)
+    return Math.max(0, rupees(s.refund_amount));
+  return s.is_refundable === true ? saleHeldMoney(s, settings) : 0;
+}
+
+export const saleRefundCashOut = (
+  s: Parameters<typeof saleHeldMoney>[0],
+  settings?: Parameters<typeof snackSaleGrossTotal>[1],
+) =>
+  (s.refund_mode ?? "Cash") === "Cash" ? saleRefundOutflow(s, settings) : 0;

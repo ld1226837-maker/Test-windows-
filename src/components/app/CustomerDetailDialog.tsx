@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { MessageCircle, Phone, HandCoins, CheckCircle2 } from "lucide-react";
@@ -208,7 +209,7 @@ export function CustomerDetailContent({
     // myBookings keeps merged rows in — it's used to render the raw booking
     // list below (with a "merged" badge), not to total money or visits.
     const myBookings = bookings.filter(
-      (b) => matches(b.customer_name, b.phone) && b.status !== "Cancelled",
+      (b) => matches(b.customer_name, b.phone) && isLive(b),
     );
     // Money and visit-count math routes through isFinancialBooking() so a
     // merged booking's amount/visit (already represented via myBills) isn't

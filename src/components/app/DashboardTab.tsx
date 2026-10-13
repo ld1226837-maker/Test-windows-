@@ -1,3 +1,4 @@
+import { isCancelled, isLive } from "@/lib/bill-state";
 import {
   cleanAmountInput,
   expenseCashPart,
@@ -58,7 +59,7 @@ import {
   money,
   whatsappUrl,
 } from "@/lib/biz";
-import { billDue, bookingDue } from "@/lib/dues";
+import { billDue, bookingDue, pendingMoneyIndex } from "@/lib/dues";
 import { useTabEntries } from "@/lib/tabs";
 import { openWhatsApp } from "@/lib/contact";
 import { cn, errorMessage } from "@/lib/utils";
@@ -97,7 +98,7 @@ import {
   profitAndLoss,
   statsForMonth,
   type Sources,
-  cashRefundOutflowOn,
+  drawerCashOn,
 } from "@/lib/analytics";
 import { compareBy, useSortState, type SortOption } from "@/lib/sort";
 import { useDayCloses } from "@/lib/day-close";
@@ -246,15 +247,21 @@ export function DashboardTab() {
     // One canonical "still owed" figure — billDue()/bookingDue() from
     // dues.ts: frozen tax included, anything moved to the running tab
     // excluded — the same rupee the Bills/Turf/Dues tabs show.
-    const billsDue = bills.reduce((s, b) => s + billDue(b, tabEntries), 0);
-    const turfDue = bookings.reduce((s, b) => s + bookingDue(b, tabEntries), 0);
+    // Running-tab money (snack bills put "On tab", moved balances) is owed
+    // too, so the card totals through pendingMoneyIndex - the same function the
+    // Outstanding screen lists with - instead of bills + turf only.
+    const pending = pendingMoneyIndex({ bills, bookings, tabEntries });
     return {
-      totalDue: billsDue + turfDue,
+      totalDue: pending.total,
+      // The part of totalDue that sits only on running tabs. The "Collect now"
+      // list and age buckets show bill/turf rows; this is the remainder, so
+      // list + tabDue always equals the card total.
+      tabDue: pending.rows.reduce((n, r) => n + r.dues.tab, 0),
       // Event count, not money — a merged booking still happened today as
       // a visit, so it's intentionally NOT filtered through
       // isFinancialBooking here (only Cancelled is excluded).
       bookingsToday: bookings.filter(
-        (b) => isToday(b.booking_date) && b.status !== "Cancelled",
+        (b) => isToday(b.booking_date) && isLive(b),
       ).length,
       snackSalesToday: snackSales.filter((s) => isToday(s.sale_date)).length,
     };
@@ -267,27 +274,16 @@ export function DashboardTab() {
   // assumption this reconciliation always made, so old rows keep counting
   // exactly as they always did.
   const cashReconciliation = useMemo(() => {
-    const cashCollectedToday =
-      paymentSplit(src, (iso) => dayKey(iso) === today).find(
-        (p) => p.name === "Cash",
-      )?.value ?? 0;
-    const cashExpensesToday = expenses
-      .filter((e) => dayKey(e.spent_at) === today)
-      .reduce((s, e) => s + expenseCashPart(e), 0);
-    // K4: refundable advances that were paid back today leave the drawer.
-    const cashRefundsToday = cashRefundOutflowOn(
-      src.bookings,
-      src.tabEntries ?? [],
-      today,
-    );
+    // One shared formula (lib/analytics.ts drawerCashOn): cash collected,
+    // minus cash expenses, minus cash refunds - turf, invoices and snacks.
+    const d = drawerCashOn(src, today);
     return {
-      cashCollectedToday,
-      cashExpensesToday,
-      cashRefundsToday,
-      expectedInDrawer:
-        cashCollectedToday - cashExpensesToday - cashRefundsToday,
+      cashCollectedToday: d.cashCollected,
+      cashExpensesToday: d.cashExpenses,
+      cashRefundsToday: d.cashRefunds,
+      expectedInDrawer: d.expected,
     };
-  }, [src, expenses, today]);
+  }, [src, today]);
 
   // Today's close-out record, if the day has already been closed — used to
   // switch the cash-drawer card between "Close day" and "Edit closing".
@@ -319,7 +315,7 @@ export function DashboardTab() {
       new Date().getHours() * 60 + new Date().getMinutes(),
     );
     const candidates = bookings
-      .filter((b) => b.status !== "Cancelled" && b.status !== "Completed")
+      .filter((b) => isLive(b) && b.status !== "Completed")
       .map((b) => ({ b, bk: dayKey(b.booking_date) }))
       .filter(({ bk }) => bk === bizToday || bk === tomorrow)
       .filter(({ b, bk }) => {
@@ -938,7 +934,7 @@ export function DashboardTab() {
                 <HeroStat
                   label="Pending dues"
                   value={money(totals.totalDue)}
-                  hint={`${dueList.length} unpaid · bills + turf`}
+                  hint={`${dueList.length} unpaid · bills + turf + tabs`}
                   icon={AlertCircle}
                   tone={totals.totalDue > 0 ? "bad" : "primary"}
                 />
@@ -1142,6 +1138,7 @@ export function DashboardTab() {
         <LayoutSection id="home.dues-focus">
           <DuesFocusCard
             total={totals.totalDue}
+            tabDue={totals.tabDue}
             buckets={dueBuckets}
             topDebtors={topDebtors}
             cashCollected={collectedTodayByMode.cash}

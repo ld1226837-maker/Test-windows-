@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { localDateStr } from "./utils";
 import {
   describeSaveError,
   isAndroid,
@@ -69,7 +70,7 @@ export function customerPlayersToExportRows(
 export type CustomerExportFormat = "csv" | "xlsx" | "json" | "pdf";
 export type CustomerExportProfile = "full" | "name-contact";
 
-const dateStamp = () => new Date().toISOString().slice(0, 10);
+const dateStamp = () => localDateStr();
 
 function csvCell(value: unknown): string {
   let text = String(value ?? "");
