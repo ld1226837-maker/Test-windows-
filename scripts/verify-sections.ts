@@ -270,7 +270,8 @@ let handCancelledCount = 0;
 let handCancelledAmt = 0;
 for (const b of bookings) {
   if (!inYear(b.booking_date)) continue;
-  if (b.status === "Cancelled") {
+  // Cancelled and No-show both count: the one shared meaning (isCancelled).
+  if (b.status === "Cancelled" || b.status === "No-show") {
     handCancelledCount++;
     handCancelledAmt += b.total_amount ?? 0;
   }
