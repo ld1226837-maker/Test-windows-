@@ -13,12 +13,14 @@ import { isCancelled } from "./bill-state";
 import { dayKey } from "./analytics";
 import {
   billGrossTotal,
+  billPaidAmount,
   bookingGrossTotal,
   formatDMY,
   snackSaleGrossTotal,
   type Bill,
 } from "./biz";
 import { isFinancialBooking, isFinancialSale } from "./dues";
+import { mergedBillBreakdown } from "./merge-breakdown";
 import type { PaymentRow } from "./localdb";
 import type { SnackSale, TurfBooking } from "./ops";
 import type { TabEntry } from "./tabs";
@@ -361,6 +363,18 @@ function snackText(s: SnackSale, ctx: OwnerTextContext): string {
   return lines.join("\n");
 }
 
+const modesOf = (
+  list: { mode: string; amount: number }[] | undefined,
+): ModeTotals => {
+  const m: ModeTotals = new Map();
+  for (const x of list ?? []) addMode(m, x.mode, Number(x.amount));
+  return m;
+};
+
+/** One bill line as "Name x qty = Rs total" (plain ASCII). */
+const itemLine = (i: Bill["items"][number]) =>
+  `${clean(i.item)} x ${Number(i.qty) || 0} = ${rs(i.total)}`;
+
 function invoiceText(b: Bill, ctx: OwnerTextContext): string {
   const total = billGrossTotal(b);
   const paid = Math.min(Number(b.amount_paid) || 0, total);
@@ -372,14 +386,164 @@ function invoiceText(b: Bill, ctx: OwnerTextContext): string {
     paid,
   );
   const due = Math.max(0, Math.round(total - (Number(b.amount_paid) || 0)));
+  const items = b.items ?? [];
+
+  // Merged bills (turf booking + snack bills) remember which lines are turf
+  // and which belong to which snack bill - show them grouped so the snack
+  // bill is visible. Older / plain bills just list their lines.
+  const view = mergedBillBreakdown({
+    breakdown: b.merged_breakdown,
+    paid: billPaidAmount(b),
+    grandTotal: total,
+    itemCount: items.length,
+  });
+  // No payment rows for this bill (legacy / seeded): build the overall split
+  // from the per-part modes so it agrees with the lines above.
+  const hasRows = ctx.payments.some(
+    (r) => r.parent_type === "bill" && r.parent_id === b.id,
+  );
+  if (view && !hasRows && b.merged_breakdown) {
+    const bd = b.merged_breakdown;
+    const sum: ModeTotals = new Map();
+    const turf = [
+      ...(bd.turf_first_modes ?? bd.turf_modes ?? []),
+      ...(bd.turf_balance_modes ?? []),
+    ];
+    for (const x of turf) addMode(sum, x.mode, Number(x.amount));
+    for (const sn of bd.snacks)
+      for (const x of sn.modes ?? []) addMode(sum, x.mode, Number(x.amount));
+    if (sumMap(sum) > 0) {
+      modes.clear();
+      for (const [m, v] of sum) modes.set(m, v);
+    }
+  }
+  const body: string[] = [];
+  if (view) {
+    for (const g of view.groups) {
+      const part = items.slice(g.start, g.end);
+      if (part.length === 0) continue;
+      if (body.length) body.push("");
+      body.push(
+        g.kind === "turf" ? "Turf" : `Snacks ${clean(g.bill_no)}`.trim(),
+        ...part.map(itemLine),
+      );
+      const bd = b.merged_breakdown;
+      if (!bd) continue;
+      if (g.kind === "turf") {
+        // Advance and balance stay separate lines, each with its own modes.
+        const first = modesOf(bd.turf_first_modes ?? bd.turf_modes);
+        if (view.advancePaid > 0)
+          body.push(
+            `Advance paid: ${rs(view.advancePaid)} ${splitText(first)}`.trim(),
+          );
+        if (view.turfBalancePaid > 0)
+          body.push(
+            `Balance paid: ${rs(view.turfBalancePaid)} ${splitText(modesOf(bd.turf_balance_modes))}`.trim(),
+          );
+      } else {
+        const sn = bd.snacks.find((x) => x.bill_no === g.bill_no);
+        const sp = Number(sn?.paid) || 0;
+        body.push(
+          sp > 0
+            ? `Snacks paid: ${rs(sp)} ${splitText(modesOf(sn?.modes))}`.trim()
+            : "Snacks: on tab (not paid)",
+        );
+      }
+    }
+  } else {
+    body.push(...items.map(itemLine));
+  }
+
   const lines = [
     `${formatDMY(b.bill_date)} | ${clean(b.invoice_no)} | ${clean(b.customer_name)}`,
     "",
+    ...(body.length ? [...body, ""] : []),
     `Total: ${rs(total)}`,
     `Paid: ${rs(paid)} ${splitText(modes)}`.trim(),
   ];
   if (due > 0) lines.push(`Due: ${rs(due)}`);
   return lines.join("\n");
+}
+
+/**
+ * "Turf play today" block for the daily summary: for bookings played today,
+ * the total WITH the advance (everything collected on them, snacks included),
+ * the advance on its own (it came in before the customer arrived), and the
+ * total WITHOUT the advance (what actually came in at the counter: balance +
+ * snacks). Same rules as the per-booking message. Display only - nothing here
+ * feeds a calculation. Returns [] when no booking was played today.
+ */
+export function buildTurfDayFlowLines(
+  ctx: OwnerTextContext,
+  today: string,
+): string[] {
+  const advance: ModeTotals = new Map();
+  const without: ModeTotals = new Map();
+  let count = 0;
+  let pending = 0;
+
+  for (const b of ctx.bookings) {
+    if (dayKey(b.booking_date) !== today || !isFinancialBooking(b)) continue;
+    if (b.merged_into_bill_id) continue; // its money is on the merged bill
+    count++;
+    const own = ctx.payments.filter(
+      (r) => r.parent_type === "turf_booking" && r.parent_id === b.id,
+    );
+    const bd = bookingPaymentBreakdown(b, own, ctx.tabEntries);
+    for (const l of bd.lines)
+      addMode(l.stage === "Advance" ? advance : without, l.mode, l.amount);
+    pending += bd.due;
+    for (const sl of ctx.sales) {
+      if (sl.booking_id !== b.id || !isFinancialSale(sl)) continue;
+      const modes = modeMapFromRows(
+        ctx.payments,
+        "snack_sale",
+        sl.id,
+        sl.payment_mode,
+        snackSaleGrossTotal(sl),
+      );
+      for (const [m, v] of modes) addMode(without, m, v);
+    }
+  }
+
+  // Merged invoices dated today carry their own advance / balance split.
+  for (const b of ctx.bills) {
+    const bd = b.merged_breakdown;
+    if (!bd || isCancelled(b) || dayKey(b.bill_date) !== today) continue;
+    const view = mergedBillBreakdown({
+      breakdown: bd,
+      paid: billPaidAmount(b),
+      grandTotal: billGrossTotal(b),
+      itemCount: (b.items ?? []).length,
+    });
+    if (!view) continue;
+    count++;
+    for (const x of bd.turf_first_modes ?? bd.turf_modes ?? [])
+      addMode(advance, x.mode, Number(x.amount));
+    for (const x of bd.turf_balance_modes ?? [])
+      addMode(without, x.mode, Number(x.amount));
+    for (const sn of bd.snacks)
+      for (const x of sn.modes ?? [])
+        addMode(without, x.mode, Number(x.amount));
+    pending += view.balanceDue;
+  }
+
+  if (count === 0) return [];
+  const withAdv: ModeTotals = new Map();
+  for (const [m, v] of advance) addMode(withAdv, m, v);
+  for (const [m, v] of without) addMode(withAdv, m, v);
+  const line = (label: string, map: ModeTotals) => {
+    const flow = flowText(map);
+    return `${label}: ${rs(sumMap(map))}${flow ? ` | ${flow}` : ""}`;
+  };
+  const out = [
+    `Turf play today (${count} booking${count === 1 ? "" : "s"})`,
+    line("With advance", withAdv),
+    line("Advance (taken earlier)", advance),
+    line("Without advance (collected today)", without),
+  ];
+  if (pending > 0) out.push(`Pending on these: ${rs(pending)}`);
+  return out;
 }
 
 /** Owner message for one listed bill, or "" if the record is no longer there. */

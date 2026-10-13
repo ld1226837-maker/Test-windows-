@@ -21,6 +21,7 @@ import {
   SORT_MODES,
   buildOwnerBillText,
   buildRecentBillRows,
+  buildTurfDayFlowLines,
   isDayFilter,
   isSortMode,
   type DayFilter,
@@ -245,6 +246,7 @@ export function WhatsAppSummaryCard() {
   const { data: sales = [] } = useSnackSales();
   const { data: expenses = [] } = useExpensesV2();
   const { data: tabEntries = [] } = useTabEntries();
+  const { data: payments = [] } = usePayments();
 
   // Recent-bills controls live here so the sort bar and the list (two layout
   // parts) share them. The owner number is read through a ref so the memoised
@@ -298,10 +300,15 @@ export function WhatsAppSummaryCard() {
       .map((m) => `${m.name} ${money(m.value)}`)
       .join(" · ");
     const dateText = formatDMY(today);
+    const turfFlow = buildTurfDayFlowLines(
+      { bookings, sales, bills, payments, tabEntries },
+      today,
+    );
 
     const text = [
       `*${printSettings.shopName || BUSINESS_NAME} — Daily summary (${dateText})*`,
       `Collected: ${money(s.collected)}${modeText ? `\n${modeText}` : ""}`,
+      ...(turfFlow.length ? ["", ...turfFlow, ""] : []),
       `Revenue (incl. tax): ${money(s.revenue)} (Tax: ${money(s.tax)}) · Expenses: ${money(s.expenses)} · Profit: ${money(s.profit)}`,
       `Turf bookings: ${bookings.filter((b) => b.booking_date === today && isLive(b)).length} · Snack bills: ${sales.filter((x) => x.sale_date === today && isFinancialSale(x)).length}`,
       // All-time money owed, the same figure (and words) as the Dashboard's

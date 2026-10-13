@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildOwnerBillText,
+  buildTurfDayFlowLines,
   buildRecentBillRows,
   lastThreeDays,
 } from "./owner-bills";
@@ -275,6 +276,84 @@ describe("buildOwnerBillText", () => {
     expect(it).toContain("12-10-2026 | INV-1 | Kumar");
     expect(it).toContain("Paid: Rs 4,200 (UPI)");
     expect(it).not.toContain("Due");
+  });
+
+  it("merged invoice text lists the turf and snack bill lines", () => {
+    const i = bill({
+      id: "i2",
+      items: [
+        { item: "Turf 1 hr", rate: 1000, qty: 1, total: 1000, unit: "hr" },
+        { item: "Tea", rate: 10, qty: 2, total: 20, unit: "pcs" },
+      ],
+      subtotal: 1020,
+      total: 1020,
+      amount_paid: 1020,
+      merged_breakdown: {
+        v: 1,
+        turf_items: 1,
+        turf_advance: 1000,
+        turf_first: 500,
+        turf_first_modes: [{ mode: "Cash", amount: 500 }],
+        turf_balance_modes: [{ mode: "UPI", amount: 500 }],
+        snacks: [
+          {
+            bill_no: "SNK-1",
+            items: 1,
+            amount: 20,
+            paid: 20,
+            modes: [{ mode: "UPI", amount: 20 }],
+          },
+        ],
+      },
+    });
+    const ctx = {
+      bookings: [],
+      sales: [],
+      bills: [i],
+      payments: [],
+      tabEntries: [],
+    };
+    const it = buildOwnerBillText(row("x", { kind: "invoice", id: "i2" }), ctx);
+    expect(it).toContain("Turf\nTurf 1 hr x 1 = Rs 1,000");
+    expect(it).toContain("Snacks SNK-1\nTea x 2 = Rs 20");
+    expect(it).toContain("Advance paid: Rs 500 (Cash)");
+    expect(it).toContain("Balance paid: Rs 500 (UPI)");
+    expect(it).toContain("Snacks paid: Rs 20 (UPI)");
+    expect(it).toContain("Total: Rs 1,020");
+  });
+
+  it("daily turf block splits with / without advance", () => {
+    const b = booking({
+      id: "b2",
+      total_amount: 3100,
+      turf_amount: 3600,
+      discount: 500,
+      advance_paid: 3100,
+      hours: 3,
+      start_time: "12 PM",
+      end_time: "3 PM",
+    });
+    const payments = [
+      pay("p1", "b2", 500, "UPI", "2026-10-11T08:00:00.000Z"),
+      pay("p2", "b2", 2600, "Cash", "2026-10-12T08:00:00.000Z"),
+    ];
+    const lines = buildTurfDayFlowLines(
+      { bookings: [b], sales: [], bills: [], payments, tabEntries: [] },
+      "2026-10-12",
+    );
+    const text = lines.join("\n");
+    expect(text).toContain("Turf play today (1 booking)");
+    expect(text).toContain("With advance: Rs 3,100 | Cash 2,600 | UPI 500");
+    expect(text).toContain("Advance (taken earlier): Rs 500 | UPI 500");
+    expect(text).toContain(
+      "Without advance (collected today): Rs 2,600 | Cash 2,600",
+    );
+    expect(
+      buildTurfDayFlowLines(
+        { bookings: [b], sales: [], bills: [], payments, tabEntries: [] },
+        "2026-10-13",
+      ),
+    ).toEqual([]);
   });
 
   it("returns an empty string when the bill is gone", () => {
