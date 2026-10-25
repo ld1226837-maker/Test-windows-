@@ -196,7 +196,7 @@ export function courtHourSegments(b: CourtBooking) {
   while (end <= start) end += 1440;
   const n = bookingCourts(b);
   const segs = [{ dayOffset: 0, from: start, to: Math.min(end, 1800), n }];
-  // Only legacy rows can run past 6 AM; give the rest to the next business day.
+  // A booking that runs past the 6 AM cut-off continues on the next business day.
   if (end > 1800) segs.push({ dayOffset: 1, from: 360, to: end - 1440, n });
   return segs;
 }
@@ -350,7 +350,7 @@ export function buildCourtOccupancy(
     // Keep next-day minutes at keys 1440+ so whole-window assignment for an
     // overnight booking sees bookings already made on the following date.
     const from = Math.max(iv[0], dayStart);
-    const to = Math.min(iv[1], dayStart + 2880);
+    const to = Math.min(iv[1], dayStart + 4320);
     for (let m = from; m < to; m++) {
       const key = m - dayStart;
       let set = occupied.get(key);

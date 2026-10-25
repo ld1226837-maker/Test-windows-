@@ -510,8 +510,9 @@ export function TurfTab({
     };
   }, [occupiedMinutesOn, interval, courts, totalCourts]);
 
-  // Business-day minutes (360 … 1800), so a night that runs past midnight is
-  // one continuous range and needs nothing from the next date.
+  // Business-day minutes (360 … 3240): a night that runs past midnight is one
+  // continuous range, and 1800+ are the NEXT business day's hours so a
+  // booking may cross the 6 AM cut-off (e.g. 5–7 AM) if those are free.
   const bookedSlots = useMemo(
     () => takenOn(form.booking_date, editingId),
     [takenOn, form.booking_date, editingId],
@@ -562,6 +563,9 @@ export function TurfTab({
   const editCardRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (activeRates.length === 0) return;
+    // The Next Day tab only continues a booking that already started — its
+    // rate stays the one chosen for the start time.
+    if (dayPart === "nextday") return;
     if (lastRateKey.current === rateKey) return;
     lastRateKey.current = rateKey;
     const match = pickRateForContext(

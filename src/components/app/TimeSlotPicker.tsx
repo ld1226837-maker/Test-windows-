@@ -27,6 +27,8 @@ import {
   rangeLabel,
   durationLabel,
   swipeDirection,
+  MAX_BOOKING_MINUTES,
+  BUSINESS_DAY_END,
 } from "@/lib/time-slot-utils";
 
 const iso = localDateStr;
@@ -105,6 +107,18 @@ export function TimeSlotPicker({
   const totalMins = selected.length * interval;
   const endBoundary =
     selected.length > 0 ? Math.max(...selected) + interval : null;
+  const startMin = selected.length > 0 ? Math.min(...selected) : null;
+  // The booking runs past the 6 AM cut-off into the next business day.
+  const crossesDay = endBoundary !== null && endBoundary > BUSINESS_DAY_END;
+  const nextDateLabel = (() => {
+    const d = new Date(`${date}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    return d.toLocaleDateString("en-IN", {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
+  })();
 
   const partIndex = PICKER_PARTS.findIndex((p) => p.id === part.id);
   const goPart = (dir: 1 | -1) => {
@@ -352,8 +366,14 @@ export function TimeSlotPicker({
         )}
       >
         {slots.map((m) => {
+          // Next Day hours are only ever an END: they need a start already
+          // picked, and nothing further than 24 h after it.
+          const outOfReach =
+            part.id === "nextday" &&
+            (startMin === null || m > startMin + MAX_BOOKING_MINUTES);
           const isBooked =
-            booked.has(m) && !canEndAt(selected, m, interval, booked);
+            outOfReach ||
+            (booked.has(m) && !canEndAt(selected, m, interval, booked));
           const isSelected = selected.includes(m);
           const isEnd = !isSelected && endBoundary === m;
           const freeCourts = freeCourtsBySlot?.get(m);
@@ -429,7 +449,23 @@ export function TimeSlotPicker({
 
       {part.id === "latenight" && (
         <p className="text-center text-[11px] text-muted-foreground">
-          After midnight — these hours are booked under this date's night.
+          After midnight — these hours are booked under this date's night.{" "}
+          {selected.length > 0 && (
+            <button
+              type="button"
+              className="font-medium text-primary underline"
+              onClick={() => onDayPartChange("nextday")}
+            >
+              Need to go past 6 AM? Open Next Day
+            </button>
+          )}
+        </p>
+      )}
+      {part.id === "nextday" && (
+        <p className="text-center text-[11px] text-muted-foreground">
+          {selected.length > 0
+            ? `Continues on ${nextDateLabel}. Tap the time this booking ends (up to 24 hours long).`
+            : "Pick a start time first — these hours continue a booking into the next day."}
         </p>
       )}
 
@@ -453,7 +489,7 @@ export function TimeSlotPicker({
 
       <p className="frost-well rounded-lg border py-2 text-center text-xs text-muted-foreground">
         {selected.length > 0
-          ? `${rangeLabel(selected, interval)} · ${durationLabel(totalMins)} × ${courts} court${courts > 1 ? "s" : ""}${assignedCourtsLabel ? ` · ${assignedCourtsLabel}` : ""}`
+          ? `${rangeLabel(selected, interval)}${crossesDay ? ` (ends ${nextDateLabel})` : ""} · ${durationLabel(totalMins)} × ${courts} court${courts > 1 ? "s" : ""}${assignedCourtsLabel ? ` · ${assignedCourtsLabel}` : ""}`
           : "Tap a start slot, then an end slot"}
       </p>
     </div>

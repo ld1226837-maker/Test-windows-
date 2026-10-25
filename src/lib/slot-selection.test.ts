@@ -171,9 +171,13 @@ describe("overnight (owner's patch: end up to 6 AM next day)", () => {
     // ending exactly at 12 AM is still fine (half-open)
     expect(canEndAt(one, MIDNIGHT, 60, b)).toBe(true);
   });
-  it("cannot run past 6 AM next day", () => {
+  it("may run past 6 AM into the next business day, but never beyond 24 h", () => {
     expect(canEndAt([H(23)], MAX_END, 60, set())).toBe(true);
-    expect(canEndAt([H(23)], MAX_END + 60, 60, set())).toBe(false);
+    // 11 PM -> 7 AM next morning is 8 h: allowed (continues the next day)
+    expect(canEndAt([H(23)], MAX_END + 60, 60, set())).toBe(true);
+    // 11 PM -> 11 PM next night is exactly 24 h: allowed; one more hour is not
+    expect(canEndAt([H(23)], H(23) + 1440, 60, set())).toBe(true);
+    expect(canEndAt([H(23)], H(23) + 1500, 60, set())).toBe(false);
   });
 });
 

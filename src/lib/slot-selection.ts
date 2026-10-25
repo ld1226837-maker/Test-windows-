@@ -17,14 +17,26 @@
  *    as an END, because an end is exclusive.
  */
 
-import { BUSINESS_DAY_END, BUSINESS_DAY_START } from "@/lib/time-slot-utils";
+import {
+  BOOKING_END_LIMIT,
+  BUSINESS_DAY_END,
+  BUSINESS_DAY_START,
+  MAX_BOOKING_MINUTES,
+} from "@/lib/time-slot-utils";
 
 /** 12 AM (the turn of the calendar day) in business-day minutes. */
 export const MIDNIGHT = 1440;
 /** Earliest start of a booking: 6 AM. */
 export const MIN_START = BUSINESS_DAY_START;
-/** Latest end of a booking: 6 AM the next morning (end of Late Night). */
+/**
+ * End of the business day (6 AM next morning). A booking must START before
+ * this, but may END after it: it can continue into the next business day.
+ */
 export const MAX_END = BUSINESS_DAY_END;
+/** Latest possible end of any booking (see BOOKING_END_LIMIT). */
+export const LAST_END = BOOKING_END_LIMIT;
+/** Longest booking, in minutes (24 hours). */
+export const MAX_SPAN = MAX_BOOKING_MINUTES;
 
 /** Slot start minutes covering [start, end) on the `interval` grid. */
 export const slotsBetween = (
@@ -39,8 +51,9 @@ export const slotsBetween = (
 
 /**
  * Can the current selection be closed at `end` (exclusive)? True when the end
- * is after the start, lands exactly on the grid, is not past `MAX_END`, and
- * every slot in [start, end) is free. `end` itself may be booked.
+ * is after the start, lands exactly on the grid, makes the booking at most 24
+ * hours (it may run past 6 AM into the next business day), and every slot in
+ * [start, end) is free. `end` itself may be booked.
  */
 export function canEndAt(
   selected: readonly number[],
@@ -50,7 +63,8 @@ export function canEndAt(
 ): boolean {
   if (selected.length === 0) return false;
   const start = Math.min(...selected);
-  if (start < MIN_START || end <= start || end > MAX_END) return false;
+  if (start < MIN_START || start >= MAX_END) return false;
+  if (end <= start || end > LAST_END || end - start > MAX_SPAN) return false;
   if ((end - start) % interval !== 0) return false;
   const isBooked = (m: number) =>
     Array.isArray(booked)

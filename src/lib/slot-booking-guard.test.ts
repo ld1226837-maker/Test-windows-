@@ -302,3 +302,51 @@ describe("G3. UI availability and the guard agree", () => {
     expect(await accepts(mk(D, "11 PM", "1 AM", 2, ["c1"]))).toBe(false);
   });
 });
+
+
+describe("H. cross-day (past 6 AM) bookings through the real guard", () => {
+  it("5–7 AM is accepted on an empty day", async () => {
+    expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c1"]))).toBe(true);
+  });
+  it("5–7 AM conflicts with next date's 6–7 AM booking, 5–6 AM does not", async () => {
+    await db.turf_bookings.add(mk(D1, "6 AM", "7 AM", 1, ["c1"]) as never);
+    expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D, "5 AM", "6 AM", 1, ["c1"]))).toBe(true);
+  });
+  it("a booking at 7 AM next date does not block 5–7 AM (half-open)", async () => {
+    await db.turf_bookings.add(mk(D1, "7 AM", "8 AM", 1, ["c1"]) as never);
+    expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c1"]))).toBe(true);
+  });
+  it("a saved 5–7 AM booking blocks next date's 6–7 AM and 6:30–7:30 AM", async () => {
+    await db.turf_bookings.add(mk(D, "5 AM", "7 AM", 2, ["c1"]) as never);
+    expect(await accepts(mk(D1, "6 AM", "7 AM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D1, "6:30 AM", "7:30 AM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D1, "7 AM", "8 AM", 1, ["c1"]))).toBe(true);
+  });
+  it("24 h from 7 PM blocks everything until 7 PM next evening", async () => {
+    await db.turf_bookings.add(mk(D, "7 PM", "7 PM", 24, ["c1"]) as never);
+    expect(await accepts(mk(D, "10 PM", "11 PM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D, "3 AM", "4 AM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D1, "12 PM", "1 PM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D1, "7 PM", "8 PM", 1, ["c1"]))).toBe(true);
+    expect(await accepts(mk(D, "6 PM", "7 PM", 1, ["c1"]))).toBe(true);
+  });
+  it("24 h from 6 AM fills one business day exactly", async () => {
+    await db.turf_bookings.add(mk(D, "6 AM", "6 AM", 24, ["c1"]) as never);
+    expect(await accepts(mk(D, "5 AM", "6 AM", 1, ["c1"]))).toBe(false);
+    expect(await accepts(mk(D1, "6 AM", "7 AM", 1, ["c1"]))).toBe(true);
+  });
+  it("two courts: 5–7 AM twice fits, a third is refused", async () => {
+    await setCourts(2);
+    await db.turf_bookings.add(mk(D, "5 AM", "7 AM", 2, ["c1"]) as never);
+    expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c2"]))).toBe(true);
+    expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c1"]))).toBe(false);
+  });
+  it("editing a 5–7 AM booking does not conflict with itself", async () => {
+    const own = mk(D, "5 AM", "7 AM", 2, ["c1"]);
+    await db.turf_bookings.add(own as never);
+    expect(await accepts({ ...own, end_time: "8 AM", hours: 3 }, own.id)).toBe(
+      true,
+    );
+  });
+});

@@ -1,4 +1,4 @@
-import { Moon, MoonStar, Sunrise, Sun, Sunset } from "lucide-react";
+import { CalendarPlus, Moon, MoonStar, Sunrise, Sun, Sunset } from "lucide-react";
 import { localDateStr } from "@/lib/utils";
 
 export const DAY_PARTS = [
@@ -13,7 +13,16 @@ export const DAY_PARTS = [
   { id: "night", label: "Night", icon: Moon, from: 20, to: 24 },
 ] as const;
 
-export type DayPartId = (typeof DAY_PARTS)[number]["id"];
+/** Longest single booking: 24 hours (start -> same clock time next day). */
+export const MAX_BOOKING_MINUTES = 1440;
+/**
+ * Hard ceiling for any booking end, in business-day minutes: 6 AM the day
+ * AFTER the next business day starts (1800 + 1440). A booking may start any
+ * time inside its own business day and run on past the 6 AM cut-off into the
+ * next business day (e.g. 5 AM–7 AM, or 7 PM → 7 PM next evening), but never
+ * for more than MAX_BOOKING_MINUTES.
+ */
+export const BOOKING_END_LIMIT = 1800 + MAX_BOOKING_MINUTES;
 
 /* ------------------------------------------------------------------------ *
  * BUSINESS DAY
@@ -40,15 +49,23 @@ export const businessDateOf = (now: Date = new Date()) =>
 
 /** A day part's slot window in business-day minutes (Late Night is last). */
 export const partWindow = (p: { id: string; from: number; to: number }) =>
-  p.id === "latenight"
-    ? ([1440 + p.from * 60, 1440 + p.to * 60] as const)
-    : ([p.from * 60, p.to * 60] as const);
+  p.id === "nextday"
+    ? ([1800, BOOKING_END_LIMIT] as const)
+    : p.id === "latenight"
+      ? ([1440 + p.from * 60, 1440 + p.to * 60] as const)
+      : ([p.from * 60, p.to * 60] as const);
 
 /** Day parts in business-day order: Morning … Night, then Late Night. */
 export const PICKER_PARTS = [
   ...DAY_PARTS.filter((p) => p.id !== "latenight"),
   ...DAY_PARTS.filter((p) => p.id === "latenight"),
+  // Continuation of a booking past the 6 AM cut-off: the next business day's
+  // hours (minutes 1800+). Only usable as the END of a booking that began on
+  // this date, never as a start.
+  { id: "nextday", label: "Next Day", icon: CalendarPlus, from: 6, to: 30 },
 ] as const;
+
+export type DayPartId = (typeof PICKER_PARTS)[number]["id"];
 
 export const SLOT_INTERVALS = [30, 60] as const;
 

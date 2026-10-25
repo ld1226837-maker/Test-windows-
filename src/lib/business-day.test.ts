@@ -30,17 +30,21 @@ describe("business day 6 AM – 6 AM (helpers)", () => {
     expect(businessDateOf(new Date("2026-10-10T23:59:00"))).toBe("2026-10-10");
   });
 
-  it("picker parts run Morning … Night, Late Night last, tiling 360–1800", () => {
+  it("picker parts run Morning … Night, Late Night, then Next Day, tiling 360–3240", () => {
     expect(PICKER_PARTS.map((p) => p.id)).toEqual([
       "morning",
       "afternoon",
       "evening",
       "night",
       "latenight",
+      "nextday",
     ]);
     const wins = PICKER_PARTS.map((p) => partWindow(p));
     expect(wins[0]![0]).toBe(360);
-    expect(wins[wins.length - 1]![1]).toBe(1800);
+    // The business day itself (everything before Next Day) ends at 6 AM.
+    expect(wins[wins.length - 2]![1]).toBe(1800);
+    // Next Day is the continuation past the cut-off, capped at 24 h later.
+    expect(wins[wins.length - 1]![1]).toBe(3240);
     for (let i = 1; i < wins.length; i++)
       expect(wins[i]![0]).toBe(wins[i - 1]![1]); // no gap, no overlap
   });
