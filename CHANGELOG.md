@@ -4,6 +4,13 @@ All notable changes to this consolidation are recorded here, newest first.
 
 ## [Unreleased]
 
+### Fixed
+
+- **5 AM–7 AM is one tap away.** Late Night (12–6 AM) now shows "End at" buttons
+  for 6–9 AM, so a booking that starts before 6 AM can end after it without
+  swapping to the Morning tab between the two taps. No change to how bookings
+  are stored or priced.
+
 ### Added
 
 - **Cash / online split for every payment.** A collection can now be part cash,

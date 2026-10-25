@@ -390,6 +390,60 @@ export function TimeSlotPicker({
         })}
       </div>
 
+      {/* A booking can run on past 6 AM (e.g. 5 AM–7 AM). Late Night ends at
+          6 AM, so offer the later end times right here instead of making the
+          operator swap to the Morning tab for the second tap. */}
+      {part.id === "latenight" &&
+        selected.length > 0 &&
+        (() => {
+          const start = Math.min(...selected);
+          const ends = Array.from(
+            { length: Math.floor((9 * 60 - part.to * 60) / interval) + 1 },
+            (_, i) => part.to * 60 + i * interval,
+          );
+          return (
+            <div className="space-y-1.5">
+              <p className="text-center text-[11px] text-muted-foreground">
+                Ending later? Pick the end time
+              </p>
+              <div
+                className={cn(
+                  "grid gap-2",
+                  interval <= 30
+                    ? "grid-cols-3"
+                    : "grid-cols-2 min-[420px]:grid-cols-4",
+                )}
+              >
+                {ends.map((m) => {
+                  let canEnd = m > start && (m - start) % interval === 0;
+                  for (let x = start; canEnd && x < m; x += interval)
+                    if (booked.has(x)) canEnd = false;
+                  const isEndNow = endBoundary === m;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      disabled={!canEnd && !isEndNow}
+                      onClick={() => onToggleSlot(m)}
+                      className={cn(
+                        "w-full rounded-lg border py-2 text-xs font-medium transition-all",
+                        isEndNow
+                          ? "border-2 border-dashed border-primary bg-primary/10 text-primary"
+                          : canEnd
+                            ? "frost-soft hover:border-primary hover:text-primary"
+                            : "cursor-not-allowed bg-muted text-muted-foreground opacity-60",
+                      )}
+                    >
+                      {isEndNow ? "Ends " : "End at "}
+                      {minuteLabel(m, interval < 60)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
       {/* Pagination dots */}
       <div className="flex justify-center gap-1.5">
         {DAY_PARTS.map((p) => (
