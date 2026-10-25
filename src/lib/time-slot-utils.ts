@@ -1,4 +1,11 @@
-import { CalendarPlus, Moon, MoonStar, Sunrise, Sun, Sunset } from "lucide-react";
+import {
+  CalendarPlus,
+  Moon,
+  MoonStar,
+  Sunrise,
+  Sun,
+  Sunset,
+} from "lucide-react";
 import { localDateStr } from "@/lib/utils";
 
 export const DAY_PARTS = [

@@ -240,7 +240,10 @@ describe("S9b occupancy / court maths across the 6 AM cut-off", () => {
     expect(assignCourts(occ, 2, 2280, 60, 1)).toBeNull(); // c1 held by the 24 h, c2 by the 2 PM one
   });
   it("multi-court: two 5–7 AM bookings fit on 2 courts, a third does not", () => {
-    const rows = [mk(D, "5 AM", "7 AM", 2, ["c1"]), mk(D, "5 AM", "7 AM", 2, ["c2"])];
+    const rows = [
+      mk(D, "5 AM", "7 AM", 2, ["c1"]),
+      mk(D, "5 AM", "7 AM", 2, ["c2"]),
+    ];
     const occ = buildCourtOccupancy(rows as never, D, 2);
     expect(assignCourts(occ, 2, AM5, 120, 1)).toBeNull();
     const one = buildCourtOccupancy([rows[0]!] as never, D, 2);

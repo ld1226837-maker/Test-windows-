@@ -303,7 +303,6 @@ describe("G3. UI availability and the guard agree", () => {
   });
 });
 
-
 describe("H. cross-day (past 6 AM) bookings through the real guard", () => {
   it("5–7 AM is accepted on an empty day", async () => {
     expect(await accepts(mk(D, "5 AM", "7 AM", 2, ["c1"]))).toBe(true);
