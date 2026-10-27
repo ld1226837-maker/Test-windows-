@@ -421,10 +421,7 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
     return {
       key: `expense:${e.id}`,
       description: clean(e.description) || clean(e.category) || "Expense",
-      notes: [
-        clean(e.note),
-        cash < amount ? `Cash part ${cash}` : "",
-      ]
+      notes: [clean(e.note), cash < amount ? `Cash part ${cash}` : ""]
         .filter(Boolean)
         .join(" | "),
       amount,
