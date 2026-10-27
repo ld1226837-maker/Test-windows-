@@ -13,7 +13,7 @@ export const BUSINESS_NAME = "Chennai Soccer & Sports School";
  * `shopName || BUSINESS_NAME` fallback `receipt.ts` already uses, so a shop
  * that has set its own name in Settings sees it everywhere, not just on the
  * printed/PDF receipt. */
-function resolvedBusinessName(): string {
+export function resolvedBusinessName(): string {
   return readPrintSettings().shopName.trim() || BUSINESS_NAME;
 }
 

@@ -1,6 +1,8 @@
 package app.tauri.androidsave
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -48,6 +50,20 @@ class SaveArgs {
     var openAfterSave: Boolean = false
 }
 
+
+@InvokeArg
+class ShareFileArgs {
+    lateinit var fileName: String
+    lateinit var mimeType: String
+    lateinit var base64: String
+    /** Apps to try, in order, before falling back to the system chooser
+     *  (e.g. com.whatsapp, com.whatsapp.w4b). Empty = chooser only. */
+    var packages: Array<String> = emptyArray()
+    /** WhatsApp chat id ("<digits>@s.whatsapp.net"). Best-effort: honoured by
+     *  WhatsApp to open that chat directly, ignored by every other app. */
+    var jid: String? = null
+    var title: String? = null
+}
 
 @InvokeArg
 class StreamStartArgs { lateinit var sessionId: String; lateinit var fileName: String; lateinit var mimeType: String }
@@ -173,6 +189,81 @@ class AndroidSavePlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(result)
         } catch (e: Exception) {
             invoke.reject(e.message ?: e.toString())
+        }
+    }
+
+    /**
+     * Opens Android's share sheet with one file attached (the Daily Summary PNG).
+     *
+     * The bytes go to the app cache (share-out/, pruned after an hour) and are
+     * handed over as a content:// URI through this plugin's own FileProvider,
+     * with a read grant for the receiving app. `packages` are tried in order
+     * with ACTION_SEND aimed straight at that app (so WhatsApp opens with the
+     * picture attached); if none is installed the normal chooser is shown.
+     *
+     * This only STARTS the share: Android never reports whether the user then
+     * pressed send, so the result says which route was used, never "sent".
+     */
+    @Command
+    fun shareFile(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(ShareFileArgs::class.java)
+            val bytes = Base64.decode(args.base64, Base64.DEFAULT)
+            if (bytes.isEmpty()) {
+                invoke.reject("refusing to share an empty file")
+                return
+            }
+            val dir = File(activity.cacheDir, "share-out").apply { mkdirs() }
+            val now = System.currentTimeMillis()
+            dir.listFiles()?.forEach {
+                if (now - it.lastModified() > 3_600_000L) {
+                    try { it.delete() } catch (ignored: Exception) {}
+                }
+            }
+            val safeName = args.fileName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val target = File(dir, safeName)
+            target.outputStream().use { it.write(bytes) }
+            val uri = FileProvider.getUriForFile(
+                activity,
+                "${activity.packageName}.androidsave.fileprovider",
+                target
+            )
+
+            fun build(pkg: String?): Intent = Intent(Intent.ACTION_SEND).apply {
+                type = args.mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newRawUri(args.fileName, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (pkg != null) {
+                    setPackage(pkg)
+                    val jid = args.jid
+                    if (!jid.isNullOrBlank()) putExtra("jid", jid)
+                }
+            }
+
+            val result = JSObject()
+            for (pkg in args.packages) {
+                try {
+                    activity.startActivity(build(pkg))
+                    result.put("via", "package")
+                    result.put("package", pkg)
+                    result.put("bytesWritten", bytes.size.toLong())
+                    invoke.resolve(result)
+                    return
+                } catch (e: ActivityNotFoundException) {
+                    // That app is not installed - try the next one.
+                } catch (e: SecurityException) {
+                    // Same: fall through to the chooser.
+                }
+            }
+            val chooser = Intent.createChooser(build(null), args.title ?: "Share")
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            activity.startActivity(chooser)
+            result.put("via", "chooser")
+            result.put("bytesWritten", bytes.size.toLong())
+            invoke.resolve(result)
+        } catch (e: Exception) {
+            invoke.reject("failed to share file: ${e.message}")
         }
     }
 

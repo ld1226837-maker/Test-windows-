@@ -13,6 +13,7 @@ const COMMANDS: &[&str] = &[
     "finish_stream_save",
     "abort_stream_save",
     "request_camera_permission",
+    "share_file",
 ];
 
 fn main() {

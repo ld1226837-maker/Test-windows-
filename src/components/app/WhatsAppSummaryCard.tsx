@@ -28,6 +28,7 @@ import {
   type OwnerBillRow,
   type SortMode,
 } from "@/lib/owner-bills";
+import { DailyTableSummaryPanel } from "./DailyTableSummaryPanel";
 import { LayoutPart, LayoutParts } from "./LayoutSection";
 
 const PAGE = 5;
@@ -354,6 +355,7 @@ export function WhatsAppSummaryCard() {
                 Owner&apos;s WhatsApp number (with country code)
               </Label>
               <Input
+                id="whatsapp-owner-number"
                 ref={ownerInput}
                 inputMode="tel"
                 value={settings.whatsappOwner}
@@ -369,6 +371,9 @@ export function WhatsAppSummaryCard() {
               <MessageCircle className="mr-1 h-4 w-4" /> Send today&apos;s
               summary
             </Button>
+          </LayoutPart>
+          <LayoutPart id="settings.whatsapp.table-summary">
+            <DailyTableSummaryPanel />
           </LayoutPart>
           <LayoutPart id="settings.whatsapp.recent-sort">
             <RecentSortBar

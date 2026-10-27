@@ -55,7 +55,15 @@ export type AppSettings = {
   /** Month key ("YYYY-MM") of the last statement the owner acknowledged —
    * dashboard banner stays quiet for that month once set. */
   monthlyReportLastSentKey: string | null;
+  /** Daily Summary picture: draw the business logo in its header. */
+  summaryImageLogo: boolean;
+  /** "Old cash" the owner typed for a day ("YYYY-MM-DD" -> whole rupees).
+   * Kept for the last DAILY_OLD_CASH_KEEP days only. */
+  dailyOldCash: Record<string, number>;
 };
+
+/** How many days of typed "old cash" are kept in app settings. */
+export const DAILY_OLD_CASH_KEEP = 120;
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   gstEnabled: false,
@@ -75,6 +83,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   lastBackupErrorAt: null,
   monthlyReportEnabled: false,
   monthlyReportLastSentKey: null,
+  summaryImageLogo: true,
+  dailyOldCash: {},
 };
 
 const KEY = "ks:app-settings";
@@ -82,6 +92,22 @@ const EVENT = "ks:app-settings";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Keeps only well-formed "YYYY-MM-DD" -> non-negative whole rupee entries,
+ * newest DAILY_OLD_CASH_KEEP days. Anything else in storage is dropped. */
+function savedOldCashMap(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const days = Object.keys(value)
+    .filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k))
+    .sort()
+    .slice(-DAILY_OLD_CASH_KEEP);
+  const out: Record<string, number> = {};
+  for (const k of days) {
+    const n = Number(value[k]);
+    if (Number.isFinite(n) && n >= 0) out[k] = Math.round(n);
+  }
+  return out;
+}
 
 const savedString = (value: unknown, fallback: string) =>
   typeof value === "string" ? value : fallback;
@@ -189,6 +215,11 @@ export function normalizeAppSettings(value: unknown): AppSettings {
       typeof saved["monthlyReportLastSentKey"] === "string"
         ? saved["monthlyReportLastSentKey"]
         : null,
+    summaryImageLogo: savedBoolean(
+      saved["summaryImageLogo"],
+      DEFAULT_APP_SETTINGS.summaryImageLogo,
+    ),
+    dailyOldCash: savedOldCashMap(saved["dailyOldCash"]),
   };
 }
 

@@ -135,7 +135,9 @@ export function useTabSummaries() {
       if (e.kind === "charge") s.charged += rupees(e.amount);
       else s.paid += rupees(e.amount);
     }
-    for (const s of map.values()) s.balance = rupees(s.charged - s.paid);
+    // Never below zero: an over-payment is not a negative "remaining".
+    for (const s of map.values())
+      s.balance = Math.max(0, rupees(s.charged - s.paid));
     return map;
   }, [tabs, entries]);
 }

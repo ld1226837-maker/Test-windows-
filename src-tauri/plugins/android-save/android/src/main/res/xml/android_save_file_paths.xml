@@ -11,4 +11,5 @@
         name="android_save_legacy_downloads"
         path="Download/" />
     <cache-path name="android_save_receipt_cache" path="receipt-view/" />
+    <cache-path name="android_save_share_out" path="share-out/" />
 </paths>

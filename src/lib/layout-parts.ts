@@ -48,6 +48,7 @@ export const SECTION_PARTS: Record<string, PartDef[]> = {
   "settings.whatsapp": [
     p("settings.whatsapp.owner-number", "Owner WhatsApp number", "field", true),
     p("settings.whatsapp.daily-summary", "Daily summary button", "action"),
+    p("settings.whatsapp.table-summary", "Daily table picture", "panel"),
     p("settings.whatsapp.recent-sort", "Recent bills: days and sort", "row"),
     p("settings.whatsapp.recent-bills", "Recent bills list", "list"),
   ],

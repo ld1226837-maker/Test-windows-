@@ -1933,7 +1933,10 @@ function snackSaleReceiptRaw(
         ? [{ label: "Status", value: "CANCELLED" }]
         : snackOnTab
           ? [
-              { label: "Paid", value: pmoney(grandTotal - snackOwed) },
+              {
+                label: "Paid",
+                value: pmoney(Math.max(0, grandTotal - Math.max(0, snackOwed))),
+              },
               ...remainingView.remainingRows,
               {
                 label: "Status",
@@ -1982,6 +1985,9 @@ export function paymentReceipt(p: {
 }): ReceiptDoc {
   const now = new Date();
   const docNo = generatedDocNo("PAY", now);
+  // What is left can never print below zero (an over-collection or a zero
+  // advance must read "Rs 0", not a negative figure).
+  const left = Math.max(0, Number(p.balanceAfter) || 0);
   return {
     kind: "Payment",
     docNo,
@@ -1994,13 +2000,13 @@ export function paymentReceipt(p: {
       { label: "Mode", value: p.mode },
       {
         label: "Balance before this payment",
-        value: pmoney(Math.max(0, p.balanceAfter + p.amount)),
+        value: pmoney(Math.max(0, left + p.amount)),
       },
-      { label: "Balance remaining", value: pmoney(p.balanceAfter) },
+      { label: "Balance remaining", value: pmoney(left) },
     ],
     note:
-      p.balanceAfter > 0
-        ? `Received ${pmoney(p.amount)} via ${p.mode} on ${formatDMY(now.toISOString())}. Remaining ${pmoney(p.balanceAfter)}.`
+      left > 0
+        ? `Received ${pmoney(p.amount)} via ${p.mode} on ${formatDMY(now.toISOString())}. Remaining ${pmoney(left)}.`
         : `Received ${pmoney(p.amount)} via ${p.mode} on ${formatDMY(now.toISOString())}. Remaining ${pmoney(0)} - settled in full.`,
     fileName: `${docNo}-${safeFilePart(p.customer, "customer")}`,
   };

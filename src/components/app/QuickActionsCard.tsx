@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { goToTab } from "@/lib/nav";
+import { DailyTableShortcut } from "./DailyTableShortcut";
 import { LayoutParts, LayoutPart } from "./LayoutSection";
 import { SectionHeading } from "./SectionHeading";
 
@@ -39,7 +40,7 @@ export function QuickActionsCard() {
         </LayoutPart>
         <LayoutPart id="home.quick-actions.buttons">
           <Card className="frost">
-            <CardContent className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+            <CardContent className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-5">
               {ACTIONS.map((a) => {
                 const Icon = a.icon;
                 return (
@@ -56,6 +57,7 @@ export function QuickActionsCard() {
                   </button>
                 );
               })}
+              <DailyTableShortcut />
             </CardContent>
           </Card>
         </LayoutPart>

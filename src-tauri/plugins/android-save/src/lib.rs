@@ -56,6 +56,36 @@ pub struct SaveRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShareFileRequest {
+    pub file_name: String,
+    pub mime_type: String,
+    pub base64: String,
+    /// Apps to try in order before the chooser (e.g. `com.whatsapp`).
+    #[serde(default)]
+    pub packages: Vec<String>,
+    /// WhatsApp chat id (`<digits>@s.whatsapp.net`); best-effort.
+    #[serde(default)]
+    pub jid: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Which route the share took. Android never reports whether the user pressed
+/// send, so there is deliberately no "sent" field.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareFileResponse {
+    /// `"package"` (straight into one app) or `"chooser"`.
+    #[serde(default)]
+    pub via: Option<String>,
+    #[serde(default)]
+    pub package: Option<String>,
+    #[serde(default)]
+    pub bytes_written: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CameraPermissionResponse {
     /// True when the CAMERA runtime permission is granted for this app.
     pub granted: bool,
@@ -190,6 +220,12 @@ impl<R: Runtime> AndroidSave<R> {
             .map_err(Into::into)
     }
 
+    pub fn share_file(&self, payload: ShareFileRequest) -> Result<ShareFileResponse> {
+        self.0
+            .run_mobile_plugin("shareFile", payload)
+            .map_err(Into::into)
+    }
+
     pub fn copy_uri_to_private_file(&self, payload: CopyUriRequest) -> Result<CopyUriResponse> {
         self.0
             .run_mobile_plugin("copyUriToPrivateFile", payload)
@@ -278,6 +314,12 @@ impl<R: Runtime> AndroidSave<R> {
     }
 
     pub fn open_private_file(&self, _payload: SaveRequest) -> Result<SaveResponse> {
+        Err(Error::Plugin(
+            "android-save is only available on Android".into(),
+        ))
+    }
+
+    pub fn share_file(&self, _payload: ShareFileRequest) -> Result<ShareFileResponse> {
         Err(Error::Plugin(
             "android-save is only available on Android".into(),
         ))
@@ -436,6 +478,14 @@ fn open_private_file<R: Runtime>(
 }
 
 #[tauri::command]
+fn share_file<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    payload: ShareFileRequest,
+) -> Result<ShareFileResponse> {
+    app.android_save().share_file(payload)
+}
+
+#[tauri::command]
 fn copy_uri_to_private_file<R: Runtime>(
     app: tauri::AppHandle<R>,
     payload: CopyUriRequest,
@@ -474,6 +524,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             save_to_downloads,
             open_private_file,
+            share_file,
             copy_uri_to_private_file,
             delete_private_file,
             secure_set,

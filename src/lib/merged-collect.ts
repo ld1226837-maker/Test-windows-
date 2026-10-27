@@ -45,7 +45,8 @@ export async function collectMergedBillDue(input: {
         payment_mode: p.mode,
       })),
     );
-    return { collected: total, balanceAfter: tabBalanceOf(ledger) - total };
+    return { collected: total, balanceAfter: Math.max(0, tabBalanceOf(ledger) - total),
+    };
   });
 }
 
