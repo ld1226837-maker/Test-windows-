@@ -39,8 +39,6 @@ jobs:
     name: Typecheck, lint, test, build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    permissions:
-      contents: write   # only used to commit auto-fixed formatting on pushes to main
     steps:
       - uses: actions/checkout@v6
 
@@ -64,17 +62,7 @@ jobs:
       - name: Typecheck (app + scripts)
         run: npm run typecheck:all
 
-      - name: Auto-fix formatting (Prettier via ESLint) and commit
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          npx eslint . --fix || true
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -am "style: auto-fix formatting [skip ci]"
-            git push
-          fi
-
+      # Check only: CI never rewrites or pushes code. Run `npm run format` locally.
       - name: Lint (ESLint + Prettier)
         run: npm run lint
 
@@ -104,8 +92,6 @@ jobs:
     name: Rust check and tests
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    permissions:
-      contents: write   # only used to commit a refreshed Cargo.lock on pushes to main
     steps:
       - uses: actions/checkout@v6
 
@@ -131,47 +117,16 @@ jobs:
           mkdir -p .output/public
           echo '<!doctype html><title>ci</title>' > .output/public/index.html
 
-      # NOT "--locked" on purpose: the committed Cargo.lock is behind
-      # Cargo.toml (it lacks keyring and tauri-plugin-android-save). The
-      # drift step below hands you a refreshed lockfile to commit; after
-      # committing it, add --locked back to both commands.
+      # --locked: the committed Cargo.lock is the source of truth. The build
+      # fails if it is out of sync with Cargo.toml (fix: run `cargo update -w`
+      # in src-tauri and commit Cargo.lock), so releases are reproducible.
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test
-
-      - name: Detect Cargo.lock drift
-        id: drift
-        run: |
-          if git diff --quiet -- src-tauri/Cargo.lock; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::src-tauri/Cargo.lock was behind Cargo.toml and has been refreshed."
-          fi
-
-      # On pushes to main the refreshed lockfile is committed for you, so the
-      # warning goes away on the next run. (Run "git pull --rebase" locally
-      # before your next push.) Pull requests get the artifact instead.
-      - name: Commit refreshed Cargo.lock
-        if: steps.drift.outputs.changed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/Cargo.lock
-          git commit -m "chore: refresh Cargo.lock [skip ci]"
-          git push
-
-      - name: Upload refreshed Cargo.lock
-        if: steps.drift.outputs.changed == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: Cargo.lock-refreshed
-          path: src-tauri/Cargo.lock
-          retention-days: 14
+        run: cargo test --locked
 
       # Advisory only: differences become a warning annotation, not a failure.
       # Make these strict by removing the "|| echo" parts.
@@ -211,6 +166,24 @@ jobs:
       - name: Install dependencies (exact lockfile)
         run: npm ci --no-audit --no-fund
 
+      # The custom icon must be a real multi-size .ico, otherwise Windows falls
+      # back to a generic icon.
+      - name: Verify custom Windows icon
+        run: |
+          python -c "
+          import struct,sys
+          d=open('src-tauri/icons/icon.ico','rb').read()
+          n=struct.unpack('<H',d[4:6])[0]
+          sizes=[(d[6+16*i] or 256) for i in range(n)]
+          print('icon.ico sizes:',sizes)
+          sys.exit(0 if 256 in sizes and 32 in sizes and 16 in sizes else 1)
+          "
+
+      # Rebuild the app crate (not its dependencies) so the exe icon resource is
+      # always re-embedded, even when rust-cache restored an older build.
+      - name: Force icon re-embed
+        run: cargo clean --release -p turf-ledger --manifest-path src-tauri/Cargo.toml
+
       # tauri.conf.json: targets ["nsis"], beforeBuildCommand "npm run build".
       - name: Build NSIS installer
         run: npx tauri build
@@ -222,7 +195,9 @@ jobs:
           mkdir -p dist
           EXE=$(find src-tauri/target/release/bundle/nsis -name '*-setup.exe' | head -n1)
           test -n "$EXE"
-          cp "$EXE" "dist/truff-windows-v${VERSION}-setup.exe"
+          # Non-tag builds carry the short commit id so each build is identifiable.
+          SUFFIX=""; [ "${GITHUB_REF_TYPE}" = "tag" ] || SUFFIX="-${GITHUB_SHA::7}"
+          cp "$EXE" "dist/truff-windows-v${VERSION}${SUFFIX}-setup.exe"
           cd dist
           ls -l
           sha256sum *.exe > SHA256SUMS.txt
@@ -296,3 +271,15 @@ jobs:
           files: |
             dist/*.exe
             dist/SHA256SUMS.txt
+
+      # Keep the 10 newest build-N pre-releases; delete older ones and their tags.
+      - name: Prune old build pre-releases
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("build-"))] | .[10:] | .[].tagName' \
+          | while read -r tag; do
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+            done
