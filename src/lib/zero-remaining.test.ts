@@ -16,8 +16,10 @@ import { remainingSummary } from "./remaining-summary";
  */
 const amountOf = (v: string | undefined) =>
   Number((v ?? "").replace(/[^0-9.-]/g, ""));
-const totalOf = (doc: { totals: { label: string; value: string }[] }, l: string) =>
-  doc.totals.find((t) => t.label === l)?.value;
+const totalOf = (
+  doc: { totals: { label: string; value: string }[] },
+  l: string,
+) => doc.totals.find((t) => t.label === l)?.value;
 
 const booking = (over: Partial<TurfBooking> = {}): TurfBooking =>
   ({
@@ -65,12 +67,27 @@ const bill = (over: Partial<Bill> = {}): Bill =>
 describe("remaining is never negative", () => {
   it("remainingSummary: zero advance and overpaid both stay >= 0", () => {
     const fmt = (n: number) => `Rs ${n}`;
-    const zero = remainingSummary({ grandTotal: 1000, advances: 0, paid: 0, fmt });
+    const zero = remainingSummary({
+      grandTotal: 1000,
+      advances: 0,
+      paid: 0,
+      fmt,
+    });
     expect(zero.remaining).toBe(1000);
     expect(zero.payable).toBe(1000);
-    const over = remainingSummary({ grandTotal: 1000, advances: 0, paid: 1500, fmt });
+    const over = remainingSummary({
+      grandTotal: 1000,
+      advances: 0,
+      paid: 1500,
+      fmt,
+    });
     expect(over.remaining).toBe(0);
-    const bigAdv = remainingSummary({ grandTotal: 500, advances: 900, paid: 900, fmt });
+    const bigAdv = remainingSummary({
+      grandTotal: 500,
+      advances: 900,
+      paid: 900,
+      fmt,
+    });
     expect(bigAdv.remaining).toBe(0);
     expect(bigAdv.payable).toBe(0);
   });
