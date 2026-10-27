@@ -43,6 +43,14 @@ export type SummaryPhase = "idle" | "rendering" | "sharing";
 
 export const todayKey = () => dayKey(new Date());
 
+/** "1,170" / "1170" / "" -> whole rupees, or null when empty (use the default). */
+export const parseOldCash = (text: string): number | null => {
+  const t = text.replace(/[^\d.]/g, "");
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
+};
+
 /** Live records the table is built from (all already cached app-wide). */
 export function useDailyTableSource() {
   const { settings } = useAppSettings();
