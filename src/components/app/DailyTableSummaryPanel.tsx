@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   COLUMN_HEADERS,
+  EXPENSE_HEADERS,
   formatCell,
   rowCells,
   totalCells,
@@ -137,6 +138,12 @@ export function DailyTableSummaryPanel() {
                     className={`border border-border px-2 py-1.5 ${i === 0 ? "font-mono text-indigo-900 dark:text-indigo-200" : i === 6 ? "text-muted-foreground" : "text-right font-mono text-indigo-900 dark:text-indigo-200"}`}
                   >
                     {c}
+                    {i === 0 && r.customer && (
+                      <div className="font-sans text-[11px] text-muted-foreground">
+                        {r.customer}
+                        {r.phone ? ` · ${r.phone}` : ""}
+                      </div>
+                    )}
                   </td>
                 ))}
               </tr>
@@ -151,6 +158,61 @@ export function DailyTableSummaryPanel() {
                 </td>
               ))}
             </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="overflow-x-auto rounded-md border-2 border-indigo-900/80 bg-card">
+        <table className="w-full min-w-[420px] border-collapse text-xs tabular-nums">
+          <caption className="p-1.5 text-left text-sm font-bold">
+            EXPENSES
+          </caption>
+          <thead>
+            <tr className="bg-indigo-100/70 text-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-200">
+              {EXPENSE_HEADERS.map((h, i) => (
+                <th
+                  key={h}
+                  className={`border border-border px-2 py-1.5 font-bold ${i === 2 ? "text-right" : "text-left"}`}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.expenseList.length === 0 && (
+              <tr>
+                <td
+                  colSpan={3}
+                  className="border border-border px-2 py-2 text-muted-foreground"
+                >
+                  No expenses on this day
+                </td>
+              </tr>
+            )}
+            {table.expenseList.map((e) => (
+              <tr key={e.key}>
+                <td className="border border-border px-2 py-1.5">
+                  {e.description}
+                </td>
+                <td className="border border-border px-2 py-1.5 text-muted-foreground">
+                  {e.notes}
+                </td>
+                <td className="border border-border px-2 py-1.5 text-right font-mono">
+                  {formatCell(e.amount)}
+                </td>
+              </tr>
+            ))}
+            {table.expenseList.length > 0 && (
+              <tr className="bg-amber-200/80 font-bold dark:bg-amber-500/30">
+                <td className="border border-border px-2 py-1.5" colSpan={2}>
+                  TOTAL EXPENSES
+                </td>
+                <td className="border border-border px-2 py-1.5 text-right font-mono">
+                  {formatCell(table.expenseTotal)}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

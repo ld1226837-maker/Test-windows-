@@ -48,7 +48,14 @@ import {
   type TurfBooking,
 } from "./ops";
 import type { TabEntry } from "./tabs";
-import { BUSINESS_DAY_START, parseMinutes } from "./time-slot-utils";
+import { spanFromTimes } from "./slot-selection";
+import {
+  BUSINESS_DAY_END,
+  BUSINESS_DAY_START,
+  businessMinutes,
+  minuteLabel,
+  parseMinutes,
+} from "./time-slot-utils";
 import { bookingPaymentBreakdown } from "./turf-payments";
 
 export type DailyTableRowKind = "booking" | "merged" | "cancelled" | "snacks";
@@ -64,6 +71,20 @@ export type DailyTableRow = {
   cash: number;
   online: number;
   notes: string;
+  /** Customer name / phone shown under the time (empty for snacks). */
+  customer?: string;
+  phone?: string;
+};
+
+/** One expense of the day, listed under the table (DESCRIPTION / NOTES / AMOUNT). */
+export type DailyTableExpense = {
+  key: string;
+  description: string;
+  notes: string;
+  /** Full amount of the expense (whole rupees). */
+  amount: number;
+  /** Part of it that left the cash drawer (what REMAINING CASH subtracts). */
+  cash: number;
 };
 
 export type DailyTableTotals = {
@@ -89,6 +110,10 @@ export type DailyTable = {
   rows: DailyTableRow[];
   totals: DailyTableTotals;
   cashBlock: DailyTableCashBlock;
+  /** Every expense of the day, oldest first. */
+  expenseList: DailyTableExpense[];
+  /** Sum of the AMOUNT column of expenseList. */
+  expenseTotal: number;
   /** Owner-typed (or defaulted) cash carried in from before. */
   oldCash: number;
   /** True when oldCash came from the previous day / zero, not from the owner. */
@@ -140,19 +165,34 @@ const shiftDate = (date: string, delta: number): string => {
 
 export const previousDay = (date: string) => shiftDate(date, -1);
 
-/** "4 PM" / "5:30 PM" -> "4:00" / "5:30" (no AM/PM: the owner reads clock times). */
-const clock = (label: string | null | undefined): string | null => {
-  const mins = parseMinutes(label ?? null);
-  if (mins === null) return null;
-  const h = Math.floor(mins / 60) % 12 || 12;
-  return `${h}:${String(mins % 60).padStart(2, "0")}`;
-};
-
 function slotLabel(b: TurfBooking): string {
-  const a = clock(b.start_time);
-  const z = clock(b.end_time);
-  if (a && z) return `${a}-${z}`;
+  const a = parseMinutes(b.start_time ?? null);
+  const z = parseMinutes(b.end_time ?? null);
+  // With AM/PM ("5:30 PM-6:30 PM", "5 AM-7 AM") so a late-night or next-day
+  // slot cannot be misread.
+  if (a !== null && z !== null) return `${minuteLabel(a)}-${minuteLabel(z)}`;
   return clean(b.slot_name) || "-";
+}
+
+/**
+ * Note for a booking that runs past the 6 AM business-day cut-off into the next
+ * day ("5-7 AM" starts in Late Night and ends the next morning; 7 PM -> 7 PM is
+ * a 24 hr booking). Empty for an ordinary same-business-day slot.
+ */
+export function crossDayNote(b: {
+  start_time?: string | null;
+  end_time?: string | null;
+}): string {
+  const a = parseMinutes(b.start_time ?? null);
+  const z = parseMinutes(b.end_time ?? null);
+  if (a === null || z === null) return "";
+  const span = spanFromTimes(a, z, 1);
+  const end = businessMinutes(a) + span;
+  if (end <= BUSINESS_DAY_END) return span === 1440 ? "24 hr booking" : "";
+  const endAt = minuteLabel(z);
+  return span === 1440
+    ? `24 hr booking | ends next day ${endAt}`
+    : `Ends next day ${endAt}`.trim();
 }
 
 /** Sort key inside the 6 AM - 6 AM business day (after-midnight slots last). */
@@ -190,6 +230,8 @@ type DayParts = {
   rows: DailyTableRow[];
   totals: DailyTableTotals;
   cashBlock: DailyTableCashBlock;
+  expenseList: DailyTableExpense[];
+  expenseTotal: number;
 };
 
 function computeDay(date: string, src: DailyTableDay): DayParts {
@@ -217,10 +259,13 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
         advance: kept,
         cash: 0,
         online: 0,
+        customer: clean(b.customer_name),
+        phone: clean(b.phone),
         notes: [
           /no-show/i.test(b.status)
             ? "No-show - advance kept"
             : "Cancelled - advance kept",
+          crossDayNote(b),
           clean(b.notes),
         ]
           .filter(Boolean)
@@ -251,12 +296,15 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
       advance: whole(advance),
       cash: whole(counter.cash),
       online: whole(counter.online),
+      customer: clean(b.customer_name),
+      phone: clean(b.phone),
       notes: [
         advance > 0 ? "Advance paid" : "",
         whole(b.discount) > 0 &&
         Math.min(whole(b.discount), whole(subtotal)) > 0
           ? `Offer ${Math.min(whole(b.discount), whole(subtotal))}`
           : "",
+        crossDayNote(b),
         clean(b.notes),
       ]
         .filter(Boolean)
@@ -292,6 +340,8 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
       advance: whole(adv.cash + adv.online || view.advancePaid),
       cash: whole(counter.cash),
       online: whole(counter.online),
+      customer: clean(bill.customer_name),
+      phone: clean(bill.customer_phone),
       notes: "Merged bill",
       order: 100_000,
     });
@@ -357,9 +407,30 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
   }
 
   let expenses = 0;
-  for (const e of src.expenses) {
-    if (dayKey(e.spent_at) === date) expenses += expenseCashPart(e);
-  }
+  const dayExpenses = src.expenses
+    .filter((e) => dayKey(e.spent_at) === date)
+    .sort(
+      (x, y) =>
+        String(x.spent_at).localeCompare(String(y.spent_at)) ||
+        x.id.localeCompare(y.id),
+    );
+  const expenseList: DailyTableExpense[] = dayExpenses.map((e) => {
+    const amount = whole(e.amount);
+    const cash = whole(expenseCashPart(e));
+    expenses += expenseCashPart(e);
+    return {
+      key: `expense:${e.id}`,
+      description: clean(e.description) || clean(e.category) || "Expense",
+      notes: [
+        clean(e.note),
+        cash < amount ? `Cash part ${cash}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | "),
+      amount,
+      cash,
+    };
+  });
   expenses = whole(expenses);
   const specificCash = totals.cash;
   return {
@@ -370,6 +441,8 @@ function computeDay(date: string, src: DailyTableDay): DayParts {
       expenses,
       remainingCash: Math.max(0, specificCash - expenses),
     },
+    expenseList,
+    expenseTotal: expenseList.reduce((n, e) => n + e.amount, 0),
   };
 }
 
@@ -415,6 +488,8 @@ export function buildDailyTable(day: DailyTableDay): DailyTable {
     rows: parts.rows,
     totals: parts.totals,
     cashBlock: parts.cashBlock,
+    expenseList: parts.expenseList,
+    expenseTotal: parts.expenseTotal,
     oldCash: old.value,
     oldCashIsDefault: old.isDefault,
     finalTotal: parts.cashBlock.remainingCash + old.value,
@@ -461,6 +536,8 @@ export const totalCells = (t: DailyTableTotals): string[] => [
   "",
 ];
 
+export const EXPENSE_HEADERS = ["DESCRIPTION", "NOTES", "AMOUNT"] as const;
+
 export const CASH_LABELS = {
   specificCash: "SPECIFIC CASH TOTAL (Rs)",
   expenses: "THAT DAY EXPENSES (Rs)",
@@ -496,8 +573,19 @@ export function buildDailyTableText(
   for (const r of table.rows) out.push(line(rowCells(r)));
   out.push(line(totalCells(table.totals)));
   for (const r of table.rows)
+    if (r.customer)
+      out.push(`  ${r.time} - ${r.customer}${r.phone ? ` ${r.phone}` : ""}`);
+  for (const r of table.rows)
     if (r.notes && r.kind !== "snacks") out.push(`  ${r.time}: ${r.notes}`);
   const c = table.cashBlock;
+  out.push(`Expenses (${table.expenseList.length}):`);
+  if (table.expenseList.length === 0) out.push("  (none)");
+  for (const e of table.expenseList)
+    out.push(
+      `  ${e.description}${e.notes ? ` (${e.notes})` : ""}: Rs ${formatCell(e.amount)}`,
+    );
+  if (table.expenseList.length > 0)
+    out.push(`  Total expenses: Rs ${formatCell(table.expenseTotal)}`);
   out.push(
     `Specific cash: Rs ${formatCell(c.specificCash)}   Expenses: Rs ${formatCell(c.expenses)}`,
     `Remaining cash: Rs ${formatCell(c.remainingCash)}   Old cash: Rs ${formatCell(table.oldCash)}`,

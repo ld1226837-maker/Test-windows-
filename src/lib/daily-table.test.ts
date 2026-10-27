@@ -170,10 +170,10 @@ describe("buildDailyTable - worked example", () => {
 
   it("has one row per booking, in clock order, with the exact cells", () => {
     expect(t.rows.map(rowCells)).toEqual([
-      ["5:30-6:30", "1200", "0", "500", "100", "600", "Advance paid"],
-      ["6:30-8:00", "1800", "0", "0", "200", "1600", "extra 30 min"],
-      ["9:00-10:30", "1800", "800", "0", "570", "380", "Offer 800"],
-      ["11:00-12:00", "1200", "0", "600", "300", "300", "Advance paid"],
+      ["5:30 PM-6:30 PM", "1200", "0", "500", "100", "600", "Advance paid"],
+      ["6:30 PM-8 PM", "1800", "0", "0", "200", "1600", "extra 30 min"],
+      ["9 PM-10:30 PM", "1800", "800", "0", "570", "380", "Offer 800"],
+      ["11 PM-12 AM", "1200", "0", "600", "300", "300", "Advance paid"],
     ]);
   });
 
@@ -215,7 +215,7 @@ describe("buildDailyTable - worked example", () => {
     expect(text).toContain("Specific cash: Rs 1170   Expenses: Rs 0");
     expect(text).toContain("Remaining cash: Rs 1170   Old cash: Rs 2300");
     expect(text).toContain("FINAL TOTAL: Rs 3470");
-    expect(text).toContain("6:30-8:00: extra 30 min");
+    expect(text).toContain("6:30 PM-8 PM: extra 30 min");
   });
 
   it("has the seven column headers in order", () => {
@@ -419,9 +419,9 @@ describe("buildDailyTable - rows", () => {
       }),
     );
     expect(t.rows.map((r) => r.time)).toEqual([
-      "7:00-8:00",
-      "7:00-8:00",
-      "1:00-2:00",
+      "7 AM-8 AM",
+      "7 PM-8 PM",
+      "1 AM-2 AM",
     ]);
     expect(t.rows.map((r) => r.key)).toEqual([
       "booking:morn",
@@ -553,5 +553,128 @@ describe("helpers", () => {
     expect(formatCell(123456.4)).toBe("123456");
     expect(formatCell(0)).toBe("0");
     expect(formatCell(NaN)).toBe("0");
+  });
+});
+
+describe("customer details on a row", () => {
+  it("carries the customer name and phone, and the text lists them", () => {
+    const t = buildDailyTable(
+      day({
+        bookings: [
+          booking({
+            id: "c1",
+            customer_name: "Ravi  Kumar",
+            phone: "9876543210",
+            turf_amount: 1000,
+          }),
+        ],
+        payments: [pay("c1", 1000, "Cash", T1)],
+      }),
+    );
+    expect(t.rows[0]).toMatchObject({
+      customer: "Ravi Kumar",
+      phone: "9876543210",
+    });
+    expect(buildDailyTableText(t)).toContain(
+      "5:30 PM-6:30 PM - Ravi Kumar 9876543210",
+    );
+  });
+});
+
+describe("expense list under the table", () => {
+  const t = () =>
+    buildDailyTable(
+      day({
+        expenses: [
+          expense({
+            id: "e2",
+            category: "Staff",
+            description: null,
+            note: "night guard",
+            amount: 500,
+            payment_mode: "UPI",
+            cash_part: 120,
+            spent_at: "2026-10-27T15:00:00.000Z",
+          }),
+          expense({
+            id: "e1",
+            description: "Ball repair",
+            note: "stitching",
+            amount: 300,
+            spent_at: "2026-10-27T09:00:00.000Z",
+          }),
+          expense({ id: "e3", amount: 700, spent_at: "2026-10-26" }),
+        ],
+      }),
+    );
+
+  it("lists only that day's expenses, oldest first, with description / notes / amount", () => {
+    const l = t().expenseList;
+    expect(l.map((e) => e.key)).toEqual(["expense:e1", "expense:e2"]);
+    expect(l[0]).toMatchObject({
+      description: "Ball repair",
+      notes: "stitching",
+      amount: 300,
+      cash: 300,
+    });
+  });
+
+  it("falls back to the category and notes the cash part of a UPI expense", () => {
+    const e = t().expenseList[1]!;
+    expect(e.description).toBe("Staff");
+    expect(e.notes).toBe("night guard | Cash part 120");
+    expect(e.amount).toBe(500);
+  });
+
+  it("total of the list is the full amounts; the cash block still takes cash only", () => {
+    const x = t();
+    expect(x.expenseTotal).toBe(800);
+    expect(x.cashBlock.expenses).toBe(420);
+  });
+
+  it("the text summary lists them too", () => {
+    const txt = buildDailyTableText(t());
+    expect(txt).toContain("Expenses (2):");
+    expect(txt).toContain("Ball repair (stitching): Rs 300");
+    expect(txt).toContain("Total expenses: Rs 800");
+    expect(buildDailyTableText(buildDailyTable(day()))).toContain("(none)");
+  });
+});
+
+describe("bookings that run past the 6 AM cut-off", () => {
+  const rowFor = (o: Record<string, unknown>) =>
+    buildDailyTable(
+      day({
+        bookings: [booking({ id: "x", turf_amount: 1000, ...o })],
+        payments: [pay("x", 1000, "Cash", T1)],
+      }),
+    ).rows[0]!;
+
+  it("5 AM - 7 AM (Late Night into the next morning) says it ends next day", () => {
+    const r = rowFor({ start_time: "5 AM", end_time: "7 AM" });
+    expect(r.time).toBe("5 AM-7 AM");
+    expect(r.notes).toContain("Ends next day 7 AM");
+  });
+
+  it("a 24 hour booking is flagged, with its next-day end when it passes 6 AM", () => {
+    expect(rowFor({ start_time: "7 PM", end_time: "7 PM" }).notes).toContain(
+      "24 hr booking | ends next day 7 PM",
+    );
+    expect(rowFor({ start_time: "6 AM", end_time: "6 AM" }).notes).toBe(
+      "24 hr booking",
+    );
+  });
+
+  it("ordinary and overnight-within-the-day slots get no marker", () => {
+    expect(rowFor({}).notes).toBe("");
+    expect(
+      rowFor({ start_time: "11 PM", end_time: "1 AM" }).notes,
+    ).not.toContain("next day");
+  });
+
+  it("keeps the owner's own notes after the marker", () => {
+    expect(
+      rowFor({ start_time: "5 AM", end_time: "7 AM", notes: "league" }).notes,
+    ).toBe("Ends next day 7 AM | league");
   });
 });

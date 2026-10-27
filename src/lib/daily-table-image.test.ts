@@ -77,6 +77,8 @@ const table = (rows: DailyTableRow[]): DailyTable => ({
   rows,
   totals: { total: 6000, offer: 800, advance: 1100, cash: 1170, online: 2880 },
   cashBlock: { specificCash: 1170, expenses: 0, remainingCash: 1170 },
+  expenseList: [],
+  expenseTotal: 0,
   oldCash: 2300,
   oldCashIsDefault: false,
   finalTotal: 3470,

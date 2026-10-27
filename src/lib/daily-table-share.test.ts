@@ -246,6 +246,8 @@ describe("copy text and the render-failure fallback", () => {
     rows: [],
     totals: { total: 0, offer: 0, advance: 0, cash: 0, online: 0 },
     cashBlock: { specificCash: 0, expenses: 0, remainingCash: 0 },
+    expenseList: [],
+    expenseTotal: 0,
     oldCash: 0,
     oldCashIsDefault: true,
     finalTotal: 0,

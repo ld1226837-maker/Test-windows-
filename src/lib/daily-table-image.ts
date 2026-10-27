@@ -17,11 +17,13 @@
 import {
   CASH_LABELS,
   COLUMN_HEADERS,
+  EXPENSE_HEADERS,
   formatCell,
   rowCells,
   tableDateText,
   totalCells,
   type DailyTable,
+  type DailyTableExpense,
 } from "./daily-table";
 import { safeFilePart } from "./file-names";
 
@@ -51,7 +53,7 @@ type CanvasLike = HTMLCanvasElement | OffscreenCanvas;
 const MARGIN = 40;
 const TABLE_W = IMAGE_WIDTH - MARGIN * 2; // 1000
 /** TIME, TOTAL, OFFER, ADVANCE, CASH, ONLINE, NOTES — sums to TABLE_W. */
-const COL_W = [170, 100, 100, 126, 104, 120, 280] as const;
+const COL_W = [230, 100, 92, 116, 96, 112, 254] as const;
 const PAD = 12;
 const HEADER_H = 150;
 const HEAD_ROW_H = 52;
@@ -61,6 +63,14 @@ const NOTE_LINE_H = 26;
 const BLOCK_GAP = 30;
 const BLOCKS_H = 250;
 const FOOTER_H = 64;
+/** Expenses list under the cash blocks: DESCRIPTION / NOTES / AMOUNT. */
+const EXP_COL_W = [360, 440, 200] as const; // sums to TABLE_W
+const EXP_GAP = 6;
+const EXP_TITLE_H = 48;
+const EXP_HEAD_H = 44;
+const EXP_TOTAL_H = 54;
+const EXP_MIN_ROW_H = 50;
+const EXP_LINE_H = 24;
 const TAIL_H = BLOCK_GAP + BLOCKS_H + FOOTER_H;
 
 const MIN_FONT = 12;
@@ -163,16 +173,61 @@ export function layoutNotes(
 /* layout (shared by every part so heights match what is drawn)         */
 /* ------------------------------------------------------------------ */
 
-type RowPlan = { cells: string[]; notes: NotesLayout; height: number };
-export type PartPlan = { rows: RowPlan[]; height: number };
+type RowPlan = {
+  cells: string[];
+  notes: NotesLayout;
+  /** Customer name lines (under the time) and phone. */
+  who: NotesLayout;
+  phone: string;
+  height: number;
+};
+type ExpenseRowPlan = {
+  e: DailyTableExpense;
+  desc: NotesLayout;
+  notes: NotesLayout;
+  height: number;
+};
+export type PartPlan = {
+  rows: RowPlan[];
+  /** Expense rows drawn under the cash blocks (last part only). */
+  expenses: ExpenseRowPlan[];
+  /** Height of the whole expenses section (0 never: it always shows). */
+  expensesH: number;
+  height: number;
+};
 
 const colX = (i: number) =>
   MARGIN + COL_W.slice(0, i).reduce((s, w) => s + w, 0);
 
-function planRow(ctx: Ctx, cells: string[]): RowPlan {
+const WHO_LINE_H = 22;
+const TIME_LINE_H = 30;
+
+function planRow(ctx: Ctx, cells: string[], customer = "", phone = ""): RowPlan {
   const notes = layoutNotes(ctx, cells[6] ?? "", COL_W[6] - PAD * 2);
-  const height = Math.max(MIN_ROW_H, notes.lines.length * NOTE_LINE_H + 24);
-  return { cells, notes, height };
+  const who = layoutNotes(ctx, customer, COL_W[0] - PAD * 2, 2, 18, 13);
+  const whoH =
+    who.lines.length > 0
+      ? who.lines.length * WHO_LINE_H + (phone ? WHO_LINE_H : 0)
+      : 0;
+  const left = whoH > 0 ? TIME_LINE_H + whoH + 20 : 0;
+  const height = Math.max(
+    MIN_ROW_H,
+    notes.lines.length * NOTE_LINE_H + 24,
+    left,
+  );
+  return { cells, notes, who, phone, height };
+}
+
+function planExpenses(ctx: Ctx, table: DailyTable) {
+  const rows: ExpenseRowPlan[] = (table.expenseList ?? []).map((e) => {
+    const desc = layoutNotes(ctx, e.description, EXP_COL_W[0] - PAD * 2);
+    const notes = layoutNotes(ctx, e.notes, EXP_COL_W[1] - PAD * 2);
+    const lines = Math.max(desc.lines.length, notes.lines.length, 1);
+    return { e, desc, notes, height: Math.max(EXP_MIN_ROW_H, lines * EXP_LINE_H + 22) };
+  });
+  const body = rows.length === 0 ? EXP_MIN_ROW_H : rows.reduce((n, r) => n + r.height, 0);
+  const total = rows.length > 0 ? EXP_TOTAL_H : 0;
+  return { rows, height: EXP_GAP + EXP_TITLE_H + EXP_HEAD_H + body + total };
 }
 
 /**
@@ -180,22 +235,25 @@ function planRow(ctx: Ctx, cells: string[]): RowPlan {
  * part reserves room for the totals/cash blocks so any of them can be the last.
  */
 export function planParts(ctx: Ctx, table: DailyTable): PartPlan[] {
-  const plans = table.rows.map((r) => planRow(ctx, rowCells(r)));
-  const base = HEADER_H + HEAD_ROW_H + TOTAL_ROW_H + TAIL_H;
+  const plans = table.rows.map((r) =>
+    planRow(ctx, rowCells(r), r.customer, r.phone),
+  );
+  const exp = planExpenses(ctx, table);
+  const base = HEADER_H + HEAD_ROW_H + TOTAL_ROW_H + TAIL_H + exp.height;
   const empty = plans.length === 0 ? MIN_ROW_H : 0;
   const parts: PartPlan[] = [];
   let cur: RowPlan[] = [];
   let curH = base + empty;
   for (const p of plans) {
     if (cur.length > 0 && curH + p.height > MAX_IMAGE_HEIGHT) {
-      parts.push({ rows: cur, height: curH });
+      parts.push({ rows: cur, expenses: exp.rows, expensesH: exp.height, height: curH });
       cur = [];
       curH = base;
     }
     cur.push(p);
     curH += p.height;
   }
-  parts.push({ rows: cur, height: curH });
+  parts.push({ rows: cur, expenses: exp.rows, expensesH: exp.height, height: curH });
   return parts;
 }
 
@@ -263,6 +321,87 @@ const stamp = (d: Date) => {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
+
+/** EXPENSES: DESCRIPTION / NOTES / AMOUNT, starting at `top`. */
+function drawExpenses(ctx: Ctx, table: DailyTable, plan: PartPlan, top: number) {
+  const x0 = MARGIN;
+  const ex = (i: number) => x0 + EXP_COL_W.slice(0, i).reduce((s, w) => s + w, 0);
+  let y = top + EXP_GAP;
+  put(ctx, "EXPENSES", x0, y + EXP_TITLE_H / 2, { size: 26, weight: 800 });
+  const countText = `${plan.expenses.length} ${plan.expenses.length === 1 ? "item" : "items"}`;
+  put(ctx, countText, x0 + TABLE_W, y + EXP_TITLE_H / 2, {
+    size: 18,
+    weight: 600,
+    align: "right",
+    color: COLORS.muted,
+  });
+  y += EXP_TITLE_H;
+  const tableTop = y;
+
+  ctx.fillStyle = COLORS.headFill;
+  ctx.fillRect(x0, y, TABLE_W, EXP_HEAD_H);
+  EXPENSE_HEADERS.forEach((h, i) => {
+    if (i < 2) put(ctx, h, ex(i) + PAD, y + EXP_HEAD_H / 2, { size: 20, weight: 700 });
+    else
+      put(ctx, h, ex(i) + EXP_COL_W[i]! - PAD, y + EXP_HEAD_H / 2, {
+        size: 20,
+        weight: 700,
+        align: "right",
+      });
+  });
+  y += EXP_HEAD_H;
+  const bodyTop = y;
+
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  if (plan.expenses.length === 0) {
+    put(ctx, "No expenses on this day", x0 + PAD, y + EXP_MIN_ROW_H / 2, {
+      size: 22,
+      weight: 500,
+      color: COLORS.muted,
+    });
+    y += EXP_MIN_ROW_H;
+    line(ctx, x0, y, x0 + TABLE_W, y);
+  }
+  for (const r of plan.expenses) {
+    const mid = y + r.height / 2;
+    const text = (n: NotesLayout, x: number, color: string, weight: number) => {
+      const top0 = mid - ((n.lines.length - 1) * EXP_LINE_H) / 2;
+      n.lines.forEach((l, k) =>
+        put(ctx, l, x, top0 + k * EXP_LINE_H, { size: n.size, weight, color }),
+      );
+    };
+    text(r.desc, ex(0) + PAD, COLORS.ink, 600);
+    text(r.notes, ex(1) + PAD, COLORS.note, 500);
+    putNumber(ctx, formatCell(r.e.amount), ex(2) + EXP_COL_W[2]! - PAD, mid, EXP_COL_W[2]! - PAD * 2, 24, 600);
+    y += r.height;
+    line(ctx, x0, y, x0 + TABLE_W, y);
+  }
+  if (plan.expenses.length > 0) {
+    ctx.fillStyle = COLORS.totalFill;
+    ctx.fillRect(x0, y, TABLE_W, EXP_TOTAL_H);
+    const mid = y + EXP_TOTAL_H / 2;
+    put(ctx, "TOTAL EXPENSES", ex(0) + PAD, mid, { size: 20, weight: 800 });
+    const cashPaid = table.cashBlock.expenses;
+    if (cashPaid !== table.expenseTotal)
+      put(ctx, `Cash paid: ${formatCell(cashPaid)}`, ex(1) + PAD, mid, {
+        size: 18,
+        weight: 600,
+        color: COLORS.note,
+      });
+    putNumber(ctx, formatCell(table.expenseTotal), ex(2) + EXP_COL_W[2]! - PAD, mid, EXP_COL_W[2]! - PAD * 2, 26, 800);
+    y += EXP_TOTAL_H;
+  }
+
+  // grid + frame
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= EXP_COL_W.length; i++) line(ctx, ex(i), tableTop, ex(i), y);
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = 2;
+  line(ctx, x0, bodyTop, x0 + TABLE_W, bodyTop);
+  ctx.strokeRect(x0, tableTop, TABLE_W, y - tableTop);
+}
 
 export function drawPart(
   ctx: Ctx,
@@ -373,11 +512,35 @@ export function drawPart(
       600,
       MONO_STACK,
     );
-    put(ctx, r.cells[0] ?? "", colX(0) + PAD, mid, {
-      size: timeSize,
-      weight: 600,
-      family: MONO_STACK,
-    });
+    const whoH =
+      r.who.lines.length > 0
+        ? r.who.lines.length * WHO_LINE_H + (r.phone ? WHO_LINE_H : 0)
+        : 0;
+    const blockTop = mid - (TIME_LINE_H + whoH) / 2;
+    put(
+      ctx,
+      r.cells[0] ?? "",
+      colX(0) + PAD,
+      whoH > 0 ? blockTop + TIME_LINE_H / 2 : mid,
+      { size: timeSize, weight: 600, family: MONO_STACK },
+    );
+    r.who.lines.forEach((l, k) =>
+      put(
+        ctx,
+        l,
+        colX(0) + PAD,
+        blockTop + TIME_LINE_H + k * WHO_LINE_H + WHO_LINE_H / 2,
+        { size: r.who.size, weight: 600, color: COLORS.note },
+      ),
+    );
+    if (r.phone && whoH > 0)
+      put(
+        ctx,
+        r.phone,
+        colX(0) + PAD,
+        blockTop + TIME_LINE_H + r.who.lines.length * WHO_LINE_H + WHO_LINE_H / 2,
+        { size: 16, weight: 500, family: MONO_STACK, color: COLORS.muted },
+      );
     for (let i = 1; i <= 5; i++)
       putNumber(
         ctx,
@@ -601,6 +764,9 @@ export function drawPart(
       align: "right",
     });
   }
+
+  // ---- expenses list (last part only) -------------------------------------
+  if (last) drawExpenses(ctx, table, plan, y + BLOCK_GAP + BLOCKS_H);
 
   // ---- footer -----------------------------------------------------------------
   put(
