@@ -182,21 +182,23 @@ export async function appendToAppDocument(
   await writeFile(full, bytes, { baseDir, append: true });
 }
 
-/** Atomically-ish moves a file inside app documents; used to publish streamed exports only after completion. */
+/** Atomically-ish moves a file inside app documents; used to publish streamed exports only after completion. Creates the destination's parent folders first. */
 export async function moveAppDocument(
   fromRelativePath: string,
   toRelativePath: string,
 ): Promise<void> {
-  const { rename } = await import("@tauri-apps/plugin-fs");
+  const { mkdir, rename } = await import("@tauri-apps/plugin-fs");
+  const { dirname } = await import("@tauri-apps/api/path");
   const { baseDir } = await resolveAppDocsBase();
-  await rename(
-    `${APP_DOCS_FOLDER}/${fromRelativePath}`,
-    `${APP_DOCS_FOLDER}/${toRelativePath}`,
-    {
-      oldPathBaseDir: baseDir,
-      newPathBaseDir: baseDir,
-    },
-  );
+  const to = `${APP_DOCS_FOLDER}/${toRelativePath}`;
+  // rename() never creates the destination's parent folder; without this a
+  // restore into a device that has no `Receipts/<date>/` folder yet failed
+  // with "No such file or directory (os error 2)".
+  await mkdir(await dirname(to), { baseDir, recursive: true });
+  await rename(`${APP_DOCS_FOLDER}/${fromRelativePath}`, to, {
+    oldPathBaseDir: baseDir,
+    newPathBaseDir: baseDir,
+  });
 }
 
 /** True if `<AppDocsBase>/TurfApp/<relativePath>` already exists. */
