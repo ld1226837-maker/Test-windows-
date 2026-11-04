@@ -1,8 +1,11 @@
 name: Auto-fix lint and formatting
 
-# Runs ESLint --fix and Prettier --write on every push to main and on pull
-# requests from this repo, then commits the result back. It only changes what
-# those tools can fix safely. Type errors and failing tests are never edited
+# Runs ESLint --fix (which also applies Prettier formatting to .ts/.tsx through
+# eslint-plugin-prettier) on every push to main and on pull requests from this
+# repo, then commits the result back. It only changes what ESLint can fix.
+# It never runs `prettier --write .` (that rewrote workflow files, generated
+# files like routeTree.gen.ts, snapshots and docs) and never commits anything
+# under .github/ (GitHub blocks the built-in token from changing workflows). Type errors and failing tests are never edited
 # automatically; the main CI workflow still reports those.
 on:
   push:
@@ -41,15 +44,15 @@ jobs:
       - name: ESLint --fix
         run: npx eslint . --fix || true
 
-      - name: Prettier --write
-        run: npx prettier --write .
-
       - name: Commit fixes, if any
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
+            # Never commit workflow files; the built-in token may not change them.
+            git checkout -- .github 2>/dev/null || true
+            git add -A -- . ':!.github'
+            git diff --cached --quiet && { echo "Nothing to commit."; exit 0; }
             git commit -m "chore: auto-fix lint and formatting"
             git push
           else
