@@ -1,0 +1,62 @@
+name: Auto-fix lint and formatting
+
+# Runs ESLint --fix and Prettier --write on every push to main and on pull
+# requests from this repo, then commits the result back. It only changes what
+# those tools can fix safely. Type errors and failing tests are never edited
+# automatically; the main CI workflow still reports those.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: autofix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  autofix:
+    # Skip fork PRs (the token cannot push to a fork) and our own fix commits.
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies (exact lockfile)
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint --fix
+        run: npx eslint . --fix || true
+
+      - name: Prettier --write
+        run: npx prettier --write .
+
+      - name: Commit fixes, if any
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "chore: auto-fix lint and formatting"
+            git push
+          else
+            echo "Nothing to fix."
+          fi
+
+      - name: Report what could not be fixed automatically
+        run: |
+          npm run typecheck:all
+          npm run lint
