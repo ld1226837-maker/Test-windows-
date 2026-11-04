@@ -70,6 +70,7 @@ export function useDailyTableSource() {
       tabEntries,
       payments,
       savedOldCash: settings.dailyOldCash,
+      savedCashAfterExpenses: settings.dailyCashAfterExpenses,
     }),
     [
       bills,
@@ -79,6 +80,7 @@ export function useDailyTableSource() {
       tabEntries,
       payments,
       settings.dailyOldCash,
+      settings.dailyCashAfterExpenses,
     ],
   );
   // A ref so a one-tap shortcut always builds from the newest records at the
@@ -127,12 +129,49 @@ export async function renderSummaryImages(
   });
 }
 
+/** The two figures remembered for a day when its summary is sent. */
+export type DayRecord = { oldCash: number; cashAfterExpenses: number };
+
+/**
+ * `settings` with both figures recorded for `date`, or null when nothing would
+ * change. Both maps are updated in ONE object so a single save() writes them
+ * together and two writes can never overwrite each other.
+ *
+ * Editing a past day: that date's stored cash-after-expenses is simply
+ * overwritten the next time the day is sent. Later days never read it while
+ * the day still has records: their default old cash follows the computed chain
+ * (daily-table.ts), so an edit to a past day flows forward on its own.
+ *
+ * A negative old cash (a shortfall carried forward as a default) is not stored
+ * as the owner's figure: it is always recomputed.
+ */
+export function withDayRecord(
+  s: AppSettings,
+  date: string,
+  v: DayRecord,
+): AppSettings | null {
+  const keepOld = v.oldCash >= 0;
+  const oldSame = !keepOld || s.dailyOldCash[date] === v.oldCash;
+  const afterSame = s.dailyCashAfterExpenses[date] === v.cashAfterExpenses;
+  if (oldSame && afterSame) return null;
+  return {
+    ...s,
+    dailyOldCash: keepOld
+      ? { ...s.dailyOldCash, [date]: v.oldCash }
+      : s.dailyOldCash,
+    dailyCashAfterExpenses: {
+      ...s.dailyCashAfterExpenses,
+      [date]: v.cashAfterExpenses,
+    },
+  };
+}
+
 export type RunInput = {
   action: SummaryAction;
   table: DailyTable;
   settings: AppSettings;
-  /** Called with the old-cash figure used, so it is remembered for that day. */
-  rememberOldCash?: (date: string, value: number) => void;
+  /** Called once, after the image rendered, with the figures to remember. */
+  rememberDay?: (date: string, record: DayRecord) => void;
   onPhase?: (p: SummaryPhase) => void;
   deps?: ShareDeps;
   /** Test seam; defaults to the real renderer. */
@@ -167,9 +206,12 @@ export async function runSummaryAction(input: RunInput): Promise<boolean> {
   }
 
   try {
-    input.rememberOldCash?.(table.date, table.oldCash);
+    input.rememberDay?.(table.date, {
+      oldCash: table.cash.oldCash,
+      cashAfterExpenses: table.cash.cashAfterExpenses,
+    });
   } catch {
-    /* remembering the figure is a convenience, never a reason to stop */
+    /* remembering the figures is a convenience, never a reason to stop */
   }
 
   input.onPhase?.("sharing");
@@ -200,11 +242,12 @@ export function useDailyTableActions() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
-  const rememberOldCash = useCallback(
-    (date: string, value: number) => {
-      const s = settingsRef.current;
-      if (s.dailyOldCash[date] === value) return;
-      save({ ...s, dailyOldCash: { ...s.dailyOldCash, [date]: value } });
+  // ONE save() with the newest settings (the ref), so the two maps are
+  // written together and nothing else saved meanwhile is overwritten.
+  const rememberDay = useCallback(
+    (date: string, record: DayRecord) => {
+      const next = withDayRecord(settingsRef.current, date, record);
+      if (next) save(next);
     },
     [save],
   );
@@ -218,7 +261,7 @@ export function useDailyTableActions() {
           action,
           table,
           settings: settingsRef.current,
-          rememberOldCash,
+          rememberDay,
           onPhase: setPhase,
         });
       } catch (e) {
@@ -232,7 +275,7 @@ export function useDailyTableActions() {
         setPhase("idle");
       }
     },
-    [rememberOldCash],
+    [rememberDay],
   );
 
   return { run, phase, busy: phase !== "idle", settings };

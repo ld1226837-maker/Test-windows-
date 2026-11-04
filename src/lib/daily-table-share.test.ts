@@ -13,7 +13,7 @@ import {
 import { runSummaryAction } from "./daily-table-actions";
 import type { RenderedImage } from "./daily-table-image";
 import { DEFAULT_APP_SETTINGS } from "./settings";
-import type { DailyTable } from "./daily-table";
+import { makeCashFlow, type DailyTable } from "./daily-table";
 
 const img = (name = "Daily-Summary-27-10-2026.png"): RenderedImage => ({
   blob: new Blob(["png"], { type: "image/png" }),
@@ -245,12 +245,16 @@ describe("copy text and the render-failure fallback", () => {
     date: "2026-10-27",
     rows: [],
     totals: { total: 0, offer: 0, advance: 0, cash: 0, online: 0 },
-    cashBlock: { specificCash: 0, expenses: 0, remainingCash: 0 },
+    counts: { bookings: 0, snackSales: 0 },
     expenseList: [],
     expenseTotal: 0,
-    oldCash: 0,
-    oldCashIsDefault: true,
-    finalTotal: 0,
+    cash: makeCashFlow({
+      date: "2026-10-27",
+      oldCash: 0,
+      source: "none",
+      cashExpenses: 0,
+      collectedCash: 0,
+    }),
   };
 
   it("when rendering fails: error toast with Copy text instead, nothing shared, nothing remembered", async () => {
@@ -260,7 +264,7 @@ describe("copy text and the render-failure fallback", () => {
       action: "send",
       table: tbl,
       settings: DEFAULT_APP_SETTINGS,
-      rememberOldCash: remember,
+      rememberDay: remember,
       deps: d,
       render: async () => {
         throw new Error("Canvas 2D is not available");
@@ -280,15 +284,28 @@ describe("copy text and the render-failure fallback", () => {
     const phases: string[] = [];
     const ok = await runSummaryAction({
       action: "send",
-      table: { ...tbl, oldCash: 2300 },
+      table: {
+        ...tbl,
+        cash: makeCashFlow({
+          date: "2026-10-27",
+          oldCash: 2300,
+          cashExpenses: 340,
+          collectedCash: 2500,
+        }),
+      },
       settings: { ...DEFAULT_APP_SETTINGS, whatsappOwner: "9876543210" },
-      rememberOldCash: remember,
+      rememberDay: remember,
       onPhase: (p) => phases.push(p),
       deps: d,
       render: async () => [img()],
     });
     expect(ok).toBe(true);
-    expect(remember).toHaveBeenCalledWith("2026-10-27", 2300);
+    // One call with BOTH figures: old cash and cash after expenses (2300 - 340).
+    expect(remember).toHaveBeenCalledTimes(1);
+    expect(remember).toHaveBeenCalledWith("2026-10-27", {
+      oldCash: 2300,
+      cashAfterExpenses: 1960,
+    });
     expect(phases).toEqual(["rendering", "sharing", "idle"]);
   });
 });

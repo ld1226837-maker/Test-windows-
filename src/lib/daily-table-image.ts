@@ -8,9 +8,13 @@
  * Rules this file keeps:
  *  - 1080 logical px wide, rendered at 2x pixel ratio (2160 px file).
  *  - Cells never clip: text is measured and shrunk 1 px at a time down to a
- *    minimum. A number is never cut with an ellipsis. NOTES wraps to 2 lines.
+ *    minimum. A number is never cut with an ellipsis. NOTES wraps to 2 lines when it can,
+ *    otherwise to as many lines as it needs: a note is never truncated.
  *  - Rows grow to fit. More than 30 rows still go on one tall image; only past
  *    MAX_IMAGE_HEIGHT logical px is the table split into "Part 1/2" images.
+ *  - Top to bottom: header, three headline figures, BOOKINGS & SALES table,
+ *    EXPENSES, then the CASH FLOW waterfall (the last part only). The cash flow
+ *    is drawn by looping over table.cash.steps; it never has lines of its own.
  *  - Only strings produced by daily-table.ts are drawn, so the picture and the
  *    text fallback can never disagree.
  */
@@ -18,10 +22,18 @@ import {
   CASH_LABELS,
   COLUMN_HEADERS,
   EXPENSE_HEADERS,
+  EXPENSE_LABELS,
+  EXPENSE_PAID_HEADER,
+  TABLE_TITLE,
+  countsText,
   formatCell,
+  headlineFigures,
+  isNegativeBalance,
   rowCells,
+  stepAmountText,
   tableDateText,
   totalCells,
+  type CashStep,
   type DailyTable,
   type DailyTableExpense,
 } from "./daily-table";
@@ -40,6 +52,8 @@ export const COLORS = {
   totalFill: "#FFECA8",
   muted: "#8A8A8A",
   note: "#5B6070",
+  /** Red-ish ink for a balance below zero (always with a minus sign too). */
+  negative: "#B3261E",
 } as const;
 
 export const SANS_STACK =
@@ -55,23 +69,90 @@ const TABLE_W = IMAGE_WIDTH - MARGIN * 2; // 1000
 /** TIME, TOTAL, OFFER, ADVANCE, CASH, ONLINE, NOTES — sums to TABLE_W. */
 const COL_W = [230, 100, 92, 116, 96, 112, 254] as const;
 const PAD = 12;
+/** Top band: logo, business name, "Daily Summary", date. */
 const HEADER_H = 150;
+/** Headline strip: COLLECTED CASH / CASH EXPENSES / FINAL TOTAL. */
+const STRIP_H = 108;
+/** "BOOKINGS & SALES" title row with the booking / snack-sale counts. */
+const TITLE_H = 52;
+/** Where the table's own head row starts. */
+const TABLE_TOP = HEADER_H + STRIP_H + TITLE_H;
 const HEAD_ROW_H = 52;
 const MIN_ROW_H = 56;
-const TOTAL_ROW_H = 62;
+const TOTAL_ROW_H = 70;
 const NOTE_LINE_H = 26;
 const BLOCK_GAP = 30;
-const BLOCKS_H = 250;
 const FOOTER_H = 64;
-/** Expenses list under the cash blocks: DESCRIPTION / NOTES / AMOUNT. */
-const EXP_COL_W = [360, 440, 200] as const; // sums to TABLE_W
+/** Expenses list: DESCRIPTION / NOTES / PAID (CASH|ONLINE tag) / AMOUNT. */
+const EXP_COL_W = [300, 330, 170, 200] as const; // sums to TABLE_W
 const EXP_GAP = 6;
 const EXP_TITLE_H = 48;
 const EXP_HEAD_H = 44;
 const EXP_TOTAL_H = 54;
+/** The two subtotal rows (cash deducted / online not deducted). */
+const EXP_SUB_H = 46;
 const EXP_MIN_ROW_H = 50;
 const EXP_LINE_H = 24;
-const TAIL_H = BLOCK_GAP + BLOCKS_H + FOOTER_H;
+
+/* Cash flow card. Every height below is per STEP KIND, so what is drawn and
+ * what the part splitter reserves come from the same numbers. */
+const CARD_PAD = 24;
+const CARD_TITLE_H = 54;
+/** Muted "carried forward" line (label + hint) and its optional note line. */
+const CARRIED_H = 58;
+const CARRIED_NOTE_H = 30;
+/** A calculation line without / with a hint line under the label. */
+const CARD_ROW_H = 52;
+const CARD_ROW_HINT_H = 70;
+/** Thin divider before an "=" line (subtotal / final). */
+const CARD_DIVIDER_H = 16;
+const FINAL_BOX_H = 96;
+const CARD_CAPTION_H = 44;
+/** Width of the gutter that holds the "=" sign / the carried-forward arrow. */
+const GUTTER_W = 40;
+
+const stepHeight = (st: CashStep): number => {
+  switch (st.kind) {
+    case "info":
+      return CARRIED_H + (st.note ? CARRIED_NOTE_H : 0);
+    case "close":
+      return CARD_DIVIDER_H + FINAL_BOX_H;
+    case "subtotal":
+      return CARD_DIVIDER_H + (st.hint ? CARD_ROW_HINT_H : CARD_ROW_H);
+    default:
+      return st.hint ? CARD_ROW_HINT_H : CARD_ROW_H;
+  }
+};
+
+/** Height of the cash flow card for this table (varies with the optional lines). */
+export function cashCardHeight(table: DailyTable): number {
+  return (
+    CARD_TITLE_H +
+    table.cash.steps.reduce((n, st) => n + stepHeight(st), 0) +
+    CARD_CAPTION_H +
+    CARD_PAD
+  );
+}
+
+/**
+ * Tallest cash card (carried-forward line AND its difference line present).
+ * Reserved when a worst case is needed; planParts uses the real height.
+ */
+export const BLOCKS_H =
+  CARD_TITLE_H +
+  CARRIED_H +
+  CARRIED_NOTE_H +
+  CARD_ROW_HINT_H + // old cash
+  CARD_ROW_H + // less
+  CARD_DIVIDER_H +
+  CARD_ROW_HINT_H + // cash after expenses
+  CARD_ROW_H + // plus
+  CARD_DIVIDER_H +
+  FINAL_BOX_H +
+  CARD_CAPTION_H +
+  CARD_PAD;
+/** Worst-case room under the table: expenses are variable, so this is the card + gaps + footer. */
+export const TAIL_H = BLOCK_GAP + BLOCKS_H + FOOTER_H;
 
 const MIN_FONT = 12;
 
@@ -141,9 +222,10 @@ function wrapWords(ctx: Ctx, text: string, maxWidth: number): string[] {
 export type NotesLayout = { lines: string[]; size: number };
 
 /**
- * NOTES text: wraps to at most `maxLines` lines. The font shrinks 1 px at a
- * time until it fits; only if it still cannot (at the minimum size) is the last
- * line ended with an ellipsis — notes are words, never numbers.
+ * NOTES text: prefers `maxLines` lines, shrinking the font 1 px at a time down
+ * to `min` to get there. If it still needs more lines at the minimum size, ALL
+ * the lines are kept and the row simply grows taller: a note is never cut, and
+ * never ends with an ellipsis.
  */
 export function layoutNotes(
   ctx: Ctx,
@@ -161,12 +243,7 @@ export function layoutNotes(
     if (lines.length <= maxLines) return { lines, size: px };
   }
   ctx.font = font(500, min, SANS_STACK);
-  const lines = wrapWords(ctx, t, maxWidth).slice(0, maxLines);
-  let last = lines[maxLines - 1] ?? "";
-  while (last.length > 1 && ctx.measureText(`${last}\u2026`).width > maxWidth)
-    last = last.slice(0, -1);
-  lines[maxLines - 1] = `${last}\u2026`;
-  return { lines, size: min };
+  return { lines: wrapWords(ctx, t, maxWidth), size: min };
 }
 
 /* ------------------------------------------------------------------ */
@@ -189,10 +266,12 @@ type ExpenseRowPlan = {
 };
 export type PartPlan = {
   rows: RowPlan[];
-  /** Expense rows drawn under the cash blocks (last part only). */
+  /** Expense rows drawn under the table (last part only). */
   expenses: ExpenseRowPlan[];
-  /** Height of the whole expenses section (0 never: it always shows). */
+  /** Height of the whole expenses section (it always shows). */
   expensesH: number;
+  /** Height of the cash flow card (last part only). */
+  cashH: number;
   height: number;
 };
 
@@ -238,43 +317,66 @@ function planExpenses(ctx: Ctx, table: DailyTable) {
   const body =
     rows.length === 0 ? EXP_MIN_ROW_H : rows.reduce((n, r) => n + r.height, 0);
   const total = rows.length > 0 ? EXP_TOTAL_H : 0;
-  return { rows, height: EXP_GAP + EXP_TITLE_H + EXP_HEAD_H + body + total };
+  return {
+    rows,
+    height: EXP_GAP + EXP_TITLE_H + EXP_HEAD_H + body + total + EXP_SUB_H * 2,
+  };
 }
 
 /**
- * Splits the table's rows into parts no taller than MAX_IMAGE_HEIGHT. Every
- * part reserves room for the totals/cash blocks so any of them can be the last.
+ * Splits the table's rows into parts no taller than MAX_IMAGE_HEIGHT.
+ *
+ * Only the LAST part carries ALL TOTAL, the expenses and the cash flow card, so
+ * it gets the rows that fit beside that tail (taken from the end); the earlier
+ * parts hold only rows and the footer, and are filled greedily. No part ever
+ * reserves room it does not draw, and every part is at most MAX_IMAGE_HEIGHT.
  */
 export function planParts(ctx: Ctx, table: DailyTable): PartPlan[] {
   const plans = table.rows.map((r) =>
     planRow(ctx, rowCells(r), r.customer, r.phone),
   );
   const exp = planExpenses(ctx, table);
-  const base = HEADER_H + HEAD_ROW_H + TOTAL_ROW_H + TAIL_H + exp.height;
-  const empty = plans.length === 0 ? MIN_ROW_H : 0;
+  const cashH = cashCardHeight(table);
+  const top = TABLE_TOP + HEAD_ROW_H;
+  const tail = TOTAL_ROW_H + BLOCK_GAP + exp.height + BLOCK_GAP + cashH;
+  const mk = (rows: RowPlan[], last: boolean): PartPlan => {
+    const body =
+      rows.length === 0 ? MIN_ROW_H : rows.reduce((n, p) => n + p.height, 0);
+    return {
+      rows,
+      expenses: last ? exp.rows : [],
+      expensesH: exp.height,
+      cashH,
+      height: top + body + (last ? tail : 0) + FOOTER_H,
+    };
+  };
+
+  // The last part: as many trailing rows as fit beside the tail (at least one
+  // when there are any, so a single oversized row cannot loop forever).
+  const lastCap = MAX_IMAGE_HEIGHT - top - tail - FOOTER_H;
+  let lastStart = plans.length;
+  let h = 0;
+  while (lastStart > 0 && h + plans[lastStart - 1]!.height <= lastCap) {
+    lastStart--;
+    h += plans[lastStart]!.height;
+  }
+  if (lastStart === plans.length && plans.length > 0) lastStart--;
+
   const parts: PartPlan[] = [];
+  const nonLastCap = MAX_IMAGE_HEIGHT - top - FOOTER_H;
   let cur: RowPlan[] = [];
-  let curH = base + empty;
-  for (const p of plans) {
-    if (cur.length > 0 && curH + p.height > MAX_IMAGE_HEIGHT) {
-      parts.push({
-        rows: cur,
-        expenses: exp.rows,
-        expensesH: exp.height,
-        height: curH,
-      });
+  let curH = 0;
+  for (const p of plans.slice(0, lastStart)) {
+    if (cur.length > 0 && curH + p.height > nonLastCap) {
+      parts.push(mk(cur, false));
       cur = [];
-      curH = base;
+      curH = 0;
     }
     cur.push(p);
     curH += p.height;
   }
-  parts.push({
-    rows: cur,
-    expenses: exp.rows,
-    expensesH: exp.height,
-    height: curH,
-  });
+  if (cur.length > 0) parts.push(mk(cur, false));
+  parts.push(mk(plans.slice(lastStart), true));
   return parts;
 }
 
@@ -318,7 +420,7 @@ function putNumber(
   width: number,
   start: number,
   weight: number | string,
-  color = COLORS.ink,
+  color: string = COLORS.ink,
 ) {
   const size = fitFontSize(
     ctx,
@@ -343,7 +445,25 @@ const stamp = (d: Date) => {
   return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
-/** EXPENSES: DESCRIPTION / NOTES / AMOUNT, starting at `top`. */
+/** A small CASH / ONLINE tag (text says it, so it never relies on colour). */
+function drawTag(ctx: Ctx, tag: string, x: number, midY: number, w: number) {
+  const size = fitFontSize(ctx, tag, w - 18, 16, MIN_FONT, 700, SANS_STACK);
+  ctx.font = font(700, size, SANS_STACK);
+  const tw = Math.min(w, ctx.measureText(tag).width + 18);
+  const h = 28;
+  ctx.fillStyle = tag === "ONLINE" ? "#FFFFFF" : COLORS.headFill;
+  ctx.fillRect(x, midY - h / 2, tw, h);
+  ctx.strokeStyle = tag === "ONLINE" ? COLORS.muted : COLORS.ink;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x, midY - h / 2, tw, h);
+  put(ctx, tag, x + 9, midY, {
+    size,
+    weight: 700,
+    color: tag === "ONLINE" ? COLORS.note : COLORS.ink,
+  });
+}
+
+/** EXPENSES: DESCRIPTION / NOTES / PAID tag / AMOUNT, then the two subtotals. */
 function drawExpenses(
   ctx: Ctx,
   table: DailyTable,
@@ -353,6 +473,8 @@ function drawExpenses(
   const x0 = MARGIN;
   const ex = (i: number) =>
     x0 + EXP_COL_W.slice(0, i).reduce((s, w) => s + w, 0);
+  const amountRight = ex(3) + EXP_COL_W[3] - PAD;
+  const amountW = EXP_COL_W[3] - PAD * 2;
   let y = top + EXP_GAP;
   put(ctx, "EXPENSES", x0, y + EXP_TITLE_H / 2, { size: 26, weight: 800 });
   const countText = `${plan.expenses.length} ${plan.expenses.length === 1 ? "item" : "items"}`;
@@ -367,15 +489,13 @@ function drawExpenses(
 
   ctx.fillStyle = COLORS.headFill;
   ctx.fillRect(x0, y, TABLE_W, EXP_HEAD_H);
-  EXPENSE_HEADERS.forEach((h, i) => {
-    if (i < 2)
-      put(ctx, h, ex(i) + PAD, y + EXP_HEAD_H / 2, { size: 20, weight: 700 });
-    else
-      put(ctx, h, ex(i) + EXP_COL_W[i]! - PAD, y + EXP_HEAD_H / 2, {
-        size: 20,
-        weight: 700,
-        align: "right",
-      });
+  [...EXPENSE_HEADERS.slice(0, 2), EXPENSE_PAID_HEADER].forEach((h, i) =>
+    put(ctx, h, ex(i) + PAD, y + EXP_HEAD_H / 2, { size: 20, weight: 700 }),
+  );
+  put(ctx, EXPENSE_HEADERS[2], amountRight, y + EXP_HEAD_H / 2, {
+    size: 20,
+    weight: 700,
+    align: "right",
   });
   y += EXP_HEAD_H;
   const bodyTop = y;
@@ -401,51 +521,276 @@ function drawExpenses(
     };
     text(r.desc, ex(0) + PAD, COLORS.ink, 600);
     text(r.notes, ex(1) + PAD, COLORS.note, 500);
-    putNumber(
-      ctx,
-      formatCell(r.e.amount),
-      ex(2) + EXP_COL_W[2]! - PAD,
-      mid,
-      EXP_COL_W[2]! - PAD * 2,
-      24,
-      600,
-    );
+    drawTag(ctx, r.e.tag, ex(2) + PAD, mid, EXP_COL_W[2] - PAD * 2);
+    putNumber(ctx, formatCell(r.e.amount), amountRight, mid, amountW, 24, 600);
     y += r.height;
     line(ctx, x0, y, x0 + TABLE_W, y);
   }
-  if (plan.expenses.length > 0) {
-    ctx.fillStyle = COLORS.totalFill;
-    ctx.fillRect(x0, y, TABLE_W, EXP_TOTAL_H);
-    const mid = y + EXP_TOTAL_H / 2;
-    put(ctx, "TOTAL EXPENSES", ex(0) + PAD, mid, { size: 20, weight: 800 });
-    const cashPaid = table.cashBlock.expenses;
-    if (cashPaid !== table.expenseTotal)
-      put(ctx, `Cash paid: ${formatCell(cashPaid)}`, ex(1) + PAD, mid, {
-        size: 18,
-        weight: 600,
-        color: COLORS.note,
-      });
-    putNumber(
+  const gridBottom = y;
+
+  // Total + the two subtotals: their labels span the first three columns.
+  const labelW = ex(3) - x0 - PAD * 2;
+  const sumRow = (
+    label: string,
+    value: string,
+    h: number,
+    o: { fill?: string; weight: number; size: number; color?: string },
+  ) => {
+    if (o.fill) {
+      ctx.fillStyle = o.fill;
+      ctx.fillRect(x0, y, TABLE_W, h);
+    }
+    const labelSize = fitFontSize(
       ctx,
-      formatCell(table.expenseTotal),
-      ex(2) + EXP_COL_W[2]! - PAD,
-      mid,
-      EXP_COL_W[2]! - PAD * 2,
-      26,
-      800,
+      label,
+      labelW,
+      o.size,
+      MIN_FONT,
+      o.weight,
+      SANS_STACK,
     );
-    y += EXP_TOTAL_H;
-  }
+    put(ctx, label, x0 + PAD, y + h / 2, {
+      size: labelSize,
+      weight: o.weight,
+      color: o.color ?? COLORS.ink,
+    });
+    putNumber(ctx, value, amountRight, y + h / 2, amountW, 26, 800, o.color);
+    y += h;
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    line(ctx, x0, y, x0 + TABLE_W, y);
+  };
+  if (plan.expenses.length > 0)
+    sumRow(EXPENSE_LABELS.total, formatCell(table.expenseTotal), EXP_TOTAL_H, {
+      fill: COLORS.totalFill,
+      weight: 800,
+      size: 20,
+    });
+  sumRow(EXPENSE_LABELS.cash, formatCell(table.cash.cashExpenses), EXP_SUB_H, {
+    weight: 700,
+    size: 20,
+  });
+  sumRow(
+    EXPENSE_LABELS.online,
+    formatCell(table.cash.onlineExpenses),
+    EXP_SUB_H,
+    { weight: 600, size: 20, color: COLORS.note },
+  );
 
   // grid + frame
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
   for (let i = 0; i <= EXP_COL_W.length; i++)
-    line(ctx, ex(i), tableTop, ex(i), y);
+    line(ctx, ex(i), tableTop, ex(i), gridBottom);
+  line(ctx, ex(3), gridBottom, ex(3), y);
   ctx.strokeStyle = COLORS.ink;
   ctx.lineWidth = 2;
   line(ctx, x0, bodyTop, x0 + TABLE_W, bodyTop);
   ctx.strokeRect(x0, tableTop, TABLE_W, y - tableTop);
+}
+
+/** A thin down arrow in the gutter: the carried-forward figure feeds OLD CASH. */
+function drawArrow(ctx: Ctx, x: number, y1: number, y2: number) {
+  ctx.strokeStyle = COLORS.muted;
+  ctx.fillStyle = COLORS.muted;
+  ctx.lineWidth = 1.5;
+  line(ctx, x, y1, x, y2 - 6);
+  ctx.beginPath();
+  ctx.moveTo(x - 5, y2 - 8);
+  ctx.lineTo(x + 5, y2 - 8);
+  ctx.lineTo(x, y2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/**
+ * CASH FLOW card: a vertical waterfall drawn by looping over table.cash.steps.
+ * Strings come from the steps (label, hint, note, signed amount text); the
+ * picture adds only the layout: "=" in the gutter, a thin divider before each
+ * "=" line, a lighter weight for the carried-forward line, red-ish ink and a
+ * minus sign for a negative balance.
+ */
+function drawCashFlow(ctx: Ctx, table: DailyTable, top: number, cardH: number) {
+  const x0 = MARGIN;
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(x0, top, TABLE_W, cardH);
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x0, top, TABLE_W, cardH);
+
+  const lx = x0 + CARD_PAD;
+  const labelX = lx + GUTTER_W;
+  const right = x0 + TABLE_W - CARD_PAD;
+  const labelMax = (valueW: number) => right - labelX - valueW - 16;
+
+  put(ctx, "CASH FLOW", lx, top + CARD_TITLE_H / 2, { size: 26, weight: 800 });
+  put(ctx, "step by step", right, top + CARD_TITLE_H / 2, {
+    size: 18,
+    weight: 600,
+    align: "right",
+    color: COLORS.muted,
+  });
+
+  let y = top + CARD_TITLE_H;
+  let carriedBottom: number | null = null;
+  for (const st of table.cash.steps) {
+    const h = stepHeight(st);
+    const value = stepAmountText(st);
+    const negative = isNegativeBalance(st);
+    const ink = negative ? COLORS.negative : COLORS.ink;
+
+    if (st.kind === "info") {
+      // Muted, lighter than the calculation lines: not part of the sum.
+      const mid = y + 22;
+      const vSize = fitFontSize(ctx, value, 220, 22, MIN_FONT, 500, MONO_STACK);
+      ctx.font = font(500, vSize, MONO_STACK);
+      const vW = ctx.measureText(value).width;
+      const lSize = fitFontSize(
+        ctx,
+        st.label,
+        labelMax(vW),
+        20,
+        MIN_FONT,
+        500,
+        SANS_STACK,
+      );
+      put(ctx, st.label, labelX, mid, {
+        size: lSize,
+        weight: 500,
+        color: COLORS.muted,
+      });
+      put(ctx, value, right, mid, {
+        size: vSize,
+        weight: 500,
+        family: MONO_STACK,
+        align: "right",
+        color: negative ? COLORS.negative : COLORS.muted,
+      });
+      if (st.hint)
+        put(ctx, st.hint, labelX, y + 44, {
+          size: 15,
+          weight: 400,
+          color: COLORS.muted,
+        });
+      if (st.note)
+        put(ctx, st.note, labelX, y + CARRIED_H + CARRIED_NOTE_H / 2 - 4, {
+          size: 15,
+          weight: 500,
+          color: COLORS.note,
+        });
+      carriedBottom = y + h;
+      y += h;
+      continue;
+    }
+
+    if (st.kind === "close") {
+      const dy = y + CARD_DIVIDER_H / 2;
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1.5;
+      line(ctx, lx, dy, right, dy);
+      const boxY = y + CARD_DIVIDER_H;
+      ctx.fillStyle = COLORS.totalFill;
+      ctx.fillRect(lx, boxY, right - lx, FINAL_BOX_H);
+      ctx.strokeStyle = COLORS.ink;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(lx, boxY, right - lx, FINAL_BOX_H);
+      const mid = boxY + FINAL_BOX_H / 2;
+      put(ctx, "=", lx + 18, mid, {
+        size: 34,
+        weight: 800,
+        family: MONO_STACK,
+      });
+      put(ctx, st.label, lx + 18 + GUTTER_W, mid, { size: 24, weight: 800 });
+      const size = fitFontSize(
+        ctx,
+        value,
+        (right - lx) * 0.5,
+        54,
+        MIN_FONT,
+        800,
+        MONO_STACK,
+      );
+      put(ctx, value, right - 18, mid, {
+        size,
+        weight: 800,
+        family: MONO_STACK,
+        align: "right",
+        color: ink,
+      });
+      y += h;
+      continue;
+    }
+
+    let rowTop = y;
+    if (st.kind === "subtotal") {
+      const dy = y + CARD_DIVIDER_H / 2;
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1.5;
+      line(ctx, lx, dy, right, dy);
+      rowTop = y + CARD_DIVIDER_H;
+      put(ctx, "=", lx + 12, rowTop + (st.hint ? 24 : CARD_ROW_H / 2), {
+        size: 30,
+        weight: 800,
+        family: MONO_STACK,
+      });
+    }
+    const bold = st.kind === "open" || st.kind === "subtotal";
+    const mid = rowTop + (st.hint ? 24 : CARD_ROW_H / 2);
+    const vSize = fitFontSize(
+      ctx,
+      value,
+      300,
+      bold ? 32 : 28,
+      MIN_FONT,
+      bold ? 800 : 700,
+      MONO_STACK,
+    );
+    ctx.font = font(bold ? 800 : 700, vSize, MONO_STACK);
+    const vW = ctx.measureText(value).width;
+    const lSize = fitFontSize(
+      ctx,
+      st.label,
+      labelMax(vW),
+      bold ? 24 : 22,
+      MIN_FONT,
+      bold ? 800 : 600,
+      SANS_STACK,
+    );
+    put(ctx, st.label, labelX, mid, {
+      size: lSize,
+      weight: bold ? 800 : 600,
+    });
+    put(ctx, value, right, mid, {
+      size: vSize,
+      weight: bold ? 800 : 700,
+      family: MONO_STACK,
+      align: "right",
+      color: ink,
+    });
+    if (st.hint)
+      put(ctx, st.hint, labelX, rowTop + 50, {
+        size: 16,
+        weight: 500,
+        color: COLORS.muted,
+      });
+    if (st.kind === "open" && carriedBottom !== null) {
+      // The arrow runs from the carried-forward line down to OLD CASH.
+      drawArrow(ctx, lx + 14, carriedBottom - 20, mid - 14);
+    }
+    y += h;
+  }
+
+  put(
+    ctx,
+    CASH_LABELS.caption,
+    lx,
+    top + cardH - CARD_PAD - CARD_CAPTION_H / 2 + 8,
+    {
+      size: 16,
+      weight: 400,
+      color: COLORS.muted,
+    },
+  );
 }
 
 export function drawPart(
@@ -510,8 +855,56 @@ export function drawPart(
     });
   }
 
+  // ---- headline strip: three figures an owner reads first ---------------
+  {
+    const gap = 16;
+    const tileW = (TABLE_W - gap * 2) / 3;
+    const tileY = HEADER_H;
+    const tileH = STRIP_H - 18;
+    headlineFigures(table).forEach((fig, i) => {
+      const x = MARGIN + i * (tileW + gap);
+      const isFinal = fig.key === "finalTotal";
+      ctx.fillStyle = isFinal ? COLORS.totalFill : "#FFFFFF";
+      ctx.fillRect(x, tileY, tileW, tileH);
+      ctx.strokeStyle = isFinal ? COLORS.ink : COLORS.grid;
+      ctx.lineWidth = isFinal ? 3 : 1.5;
+      ctx.strokeRect(x, tileY, tileW, tileH);
+      put(ctx, fig.label, x + 16, tileY + 24, {
+        size: 17,
+        weight: 700,
+        color: COLORS.note,
+      });
+      const size = fitFontSize(
+        ctx,
+        fig.value,
+        tileW - 32,
+        isFinal ? 46 : 40,
+        MIN_FONT,
+        800,
+        MONO_STACK,
+      );
+      put(ctx, fig.value, x + tileW - 16, tileY + tileH - 30, {
+        size,
+        weight: 800,
+        family: MONO_STACK,
+        align: "right",
+        color: fig.negative ? COLORS.negative : COLORS.ink,
+      });
+    });
+  }
+
+  // ---- table title with the counts ---------------------------------------
+  const titleMid = HEADER_H + STRIP_H + TITLE_H / 2 + 4;
+  put(ctx, TABLE_TITLE, MARGIN, titleMid, { size: 26, weight: 800 });
+  put(ctx, countsText(table.counts), MARGIN + TABLE_W, titleMid, {
+    size: 20,
+    weight: 600,
+    align: "right",
+    color: COLORS.muted,
+  });
+
   // ---- table head -------------------------------------------------------
-  let y = HEADER_H;
+  let y = TABLE_TOP;
   ctx.fillStyle = COLORS.headFill;
   ctx.fillRect(MARGIN, y, TABLE_W, HEAD_ROW_H);
   COLUMN_HEADERS.forEach((h, i) => {
@@ -612,13 +1005,16 @@ export function drawPart(
     line(ctx, MARGIN, y, MARGIN + TABLE_W, y);
   }
 
-  // ---- ALL TOTAL (last part only) ----------------------------------------
+  // ---- ALL TOTAL (last part only): taller, bolder, ink rule above ----------
   if (last) {
     ctx.fillStyle = COLORS.totalFill;
     ctx.fillRect(MARGIN, y, TABLE_W, TOTAL_ROW_H);
+    ctx.strokeStyle = COLORS.ink;
+    ctx.lineWidth = 3;
+    line(ctx, MARGIN, y, MARGIN + TABLE_W, y);
     const cells = totalCells(table.totals);
     const mid = y + TOTAL_ROW_H / 2;
-    put(ctx, cells[0] ?? "", colX(0) + PAD, mid, { size: 20, weight: 800 });
+    put(ctx, cells[0] ?? "", colX(0) + PAD, mid, { size: 24, weight: 800 });
     for (let i = 1; i <= 5; i++)
       putNumber(
         ctx,
@@ -626,7 +1022,7 @@ export function drawPart(
         colX(i) + COL_W[i]! - PAD,
         mid,
         COL_W[i]! - PAD * 2,
-        26,
+        28,
         800,
       );
     y += TOTAL_ROW_H;
@@ -637,184 +1033,22 @@ export function drawPart(
   ctx.lineWidth = 1;
   for (let i = 0; i <= COL_W.length; i++) {
     const x = MARGIN + COL_W.slice(0, i).reduce((s, w) => s + w, 0);
-    line(ctx, x, HEADER_H, x, y);
+    line(ctx, x, TABLE_TOP, x, y);
   }
-  line(ctx, MARGIN, HEADER_H, MARGIN + TABLE_W, HEADER_H);
+  line(ctx, MARGIN, TABLE_TOP, MARGIN + TABLE_W, TABLE_TOP);
   ctx.strokeStyle = COLORS.ink;
   ctx.lineWidth = 2;
   line(ctx, MARGIN, bodyTop, MARGIN + TABLE_W, bodyTop);
   line(ctx, MARGIN, y, MARGIN + TABLE_W, y);
+  // Outer ink frame of the table.
+  ctx.strokeRect(MARGIN, TABLE_TOP, TABLE_W, y - TABLE_TOP);
 
-  // ---- cash blocks (last part only) ----------------------------------------
+  // ---- expenses, then the cash flow (last part only) -------------------------
   if (last) {
-    // Outer ink frame of the table.
-    ctx.strokeStyle = COLORS.ink;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(MARGIN, HEADER_H, TABLE_W, y - HEADER_H);
-
-    const top = y + BLOCK_GAP;
-    const gap = 30;
-    const cardW = (TABLE_W - gap) / 2;
-    const rightX = MARGIN + cardW + gap;
-    const rowH = 50;
-    const pad = 18;
-    const cardH = BLOCKS_H - 20;
-    const card = (x: number) => {
-      ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(x, top, cardW, cardH);
-      ctx.strokeStyle = COLORS.grid;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(x, top, cardW, cardH);
-    };
-    card(MARGIN);
-    card(rightX);
-    const labelled = (
-      x: number,
-      yy: number,
-      w: number,
-      label: string,
-      value: string,
-      bold: boolean,
-    ) => {
-      const valueSize = fitFontSize(
-        ctx,
-        value,
-        w * 0.4,
-        26,
-        MIN_FONT,
-        700,
-        MONO_STACK,
-      );
-      ctx.font = font(700, valueSize, MONO_STACK);
-      const valueW = ctx.measureText(value).width;
-      const labelSize = fitFontSize(
-        ctx,
-        label,
-        w - valueW - 16,
-        18,
-        MIN_FONT,
-        bold ? 800 : 600,
-        SANS_STACK,
-      );
-      put(ctx, label, x, yy + rowH / 2, {
-        size: labelSize,
-        weight: bold ? 800 : 600,
-      });
-      put(ctx, value, x + w, yy + rowH / 2, {
-        size: valueSize,
-        weight: 700,
-        family: MONO_STACK,
-        align: "right",
-      });
-    };
-    const lx = MARGIN + pad;
-    const lw = cardW - pad * 2;
-    const c = table.cashBlock;
-    labelled(
-      lx,
-      top + 8,
-      lw,
-      CASH_LABELS.specificCash,
-      formatCell(c.specificCash),
-      false,
-    );
-    labelled(
-      lx,
-      top + 8 + rowH,
-      lw,
-      CASH_LABELS.expenses,
-      formatCell(c.expenses),
-      false,
-    );
-    labelled(
-      lx,
-      top + 8 + rowH * 2,
-      lw,
-      CASH_LABELS.remainingCash,
-      formatCell(c.remainingCash),
-      true,
-    );
-    put(
-      ctx,
-      "Remaining = cash total - cash expenses",
-      lx,
-      top + 8 + rowH * 3 + 10,
-      {
-        size: 15,
-        color: COLORS.muted,
-      },
-    );
-
-    const rx = rightX + pad;
-    const rw = cardW - pad * 2;
-    // Old cash: label on its own full-width line, then caption + boxed field.
-    const oldLabelSize = fitFontSize(
-      ctx,
-      CASH_LABELS.oldCash,
-      rw,
-      18,
-      MIN_FONT,
-      600,
-      SANS_STACK,
-    );
-    put(ctx, CASH_LABELS.oldCash, rx, top + 26, {
-      size: oldLabelSize,
-      weight: 600,
-    });
-    ctx.fillStyle = "#FFFDF0";
-    ctx.fillRect(rx + rw - 210, top + 46, 210, 42);
-    ctx.strokeStyle = COLORS.ink;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(rx + rw - 210, top + 46, 210, 42);
-    putNumber(
-      ctx,
-      formatCell(table.oldCash),
-      rx + rw - 14,
-      top + 67,
-      190,
-      26,
-      800,
-    );
-    put(
-      ctx,
-      `Remaining cash ${formatCell(c.remainingCash)} + old cash ${formatCell(table.oldCash)}`,
-      rx,
-      top + 106,
-      { size: 16, color: COLORS.muted },
-    );
-
-    // FINAL TOTAL: highlighted box.
-    const boxY = top + 124;
-    const boxH = 80;
-    ctx.fillStyle = COLORS.totalFill;
-    ctx.fillRect(rx, boxY, rw, boxH);
-    ctx.strokeStyle = COLORS.ink;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(rx, boxY, rw, boxH);
-    put(ctx, CASH_LABELS.finalTotal, rx + 16, boxY + boxH / 2, {
-      size: 20,
-      weight: 800,
-    });
-    const finalText = formatCell(table.finalTotal);
-    const finalSize = fitFontSize(
-      ctx,
-      finalText,
-      rw * 0.5,
-      44,
-      MIN_FONT,
-      800,
-      MONO_STACK,
-    );
-    put(ctx, finalText, rx + rw - 16, boxY + boxH / 2, {
-      size: finalSize,
-      weight: 800,
-      family: MONO_STACK,
-      align: "right",
-    });
+    const expTop = y + BLOCK_GAP;
+    drawExpenses(ctx, table, plan, expTop);
+    drawCashFlow(ctx, table, expTop + plan.expensesH + BLOCK_GAP, plan.cashH);
   }
-
-  // ---- expenses list (last part only) -------------------------------------
-  if (last) drawExpenses(ctx, table, plan, y + BLOCK_GAP + BLOCKS_H);
 
   // ---- footer -----------------------------------------------------------------
   put(

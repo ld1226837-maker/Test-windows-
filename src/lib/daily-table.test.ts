@@ -196,15 +196,15 @@ describe("buildDailyTable - worked example", () => {
     ]);
   });
 
-  it("cash block and FINAL TOTAL: 1170, 0, 1170, old cash 2300, final 3470", () => {
-    expect(t.cashBlock).toEqual({
-      specificCash: 1170,
-      expenses: 0,
-      remainingCash: 1170,
+  it("cash flow: old 2300, expenses 0, after 2300, collected 1170, final 3470", () => {
+    expect(t.cash).toMatchObject({
+      oldCash: 2300,
+      oldCashIsDefault: false,
+      cashExpenses: 0,
+      cashAfterExpenses: 2300,
+      collectedCash: 1170,
+      finalTotal: 3470,
     });
-    expect(t.oldCash).toBe(2300);
-    expect(t.oldCashIsDefault).toBe(false);
-    expect(t.finalTotal).toBe(3470);
   });
 
   it("the text fallback matches the mockup layout and numbers", () => {
@@ -212,9 +212,11 @@ describe("buildDailyTable - worked example", () => {
     expect(text).toContain("Daily Summary 27-10-2026");
     expect(text).toContain("ALL TOTAL");
     expect(text).toMatch(/ALL TOTAL\s+6000\s+800\s+1100\s+1170\s+2880/);
-    expect(text).toContain("Specific cash: Rs 1170   Expenses: Rs 0");
-    expect(text).toContain("Remaining cash: Rs 1170   Old cash: Rs 2300");
-    expect(text).toContain("FINAL TOTAL: Rs 3470");
+    expect(text).toContain("Old cash: Rs 2300");
+    expect(text).toContain("- That day cash expenses: Rs 0");
+    expect(text).toContain("= Cash after expenses (stored): Rs 2300");
+    expect(text).toContain("+ Collected cash: Rs 1170");
+    expect(text).toContain("= FINAL TOTAL: Rs 3470");
     expect(text).toContain("6:30 PM-8 PM: extra 30 min");
   });
 
@@ -308,7 +310,7 @@ describe("buildDailyTable - rows", () => {
       online: 0,
     });
     expect(t.rows[0]!.notes).toContain("Cancelled");
-    expect(t.cashBlock.specificCash).toBe(0);
+    expect(t.cash.collectedCash).toBe(0);
   });
 
   it("a booking merged into a bill appears once, through the bill", () => {
@@ -453,28 +455,35 @@ describe("buildDailyTable - cash block and old cash", () => {
           expense({ id: "e3", amount: 900, payment_mode: "UPI" }),
           expense({ id: "e4", amount: 700, spent_at: "2026-10-26" }),
         ],
+        oldCashOverride: 0,
       }),
     );
-    expect(t.cashBlock).toEqual({
-      specificCash: 1000,
-      expenses: 420,
-      remainingCash: 580,
+    // Expenses come off the OLD cash (0 here), not off the collected cash.
+    expect(t.cash).toMatchObject({
+      collectedCash: 1000,
+      cashExpenses: 420,
+      onlineExpenses: 1280, // 380 of the split one + 900 all-online
+      cashAfterExpenses: -420,
+      finalTotal: 580,
     });
   });
 
-  it("remaining cash is never negative", () => {
+  it("cash after expenses is NOT clamped: it goes negative and the final total follows", () => {
     const t = buildDailyTable(
       cashDay({ expenses: [expense({ amount: 5000 })], oldCashOverride: 100 }),
     );
-    expect(t.cashBlock.remainingCash).toBe(0);
-    expect(t.finalTotal).toBe(100);
+    expect(t.cash.cashAfterExpenses).toBe(-4900);
+    expect(t.cash.finalTotal).toBe(-3900);
+    expect(
+      t.cash.steps.find((x) => x.key === "cashAfterExpenses")?.amount,
+    ).toBe(-4900);
   });
 
   it("old cash defaults to 0 with no history", () => {
     const t = buildDailyTable(cashDay());
-    expect(t.oldCash).toBe(0);
-    expect(t.oldCashIsDefault).toBe(true);
-    expect(t.finalTotal).toBe(1000);
+    expect(t.cash.oldCash).toBe(0);
+    expect(t.cash.oldCashIsDefault).toBe(true);
+    expect(t.cash.finalTotal).toBe(1000);
   });
 
   it("old cash defaults to the previous day's FINAL TOTAL", () => {
@@ -495,25 +504,27 @@ describe("buildDailyTable - cash block and old cash", () => {
         savedOldCash: { [yesterday]: 200 },
       }),
     );
-    // yesterday: cash 800 - expenses 300 = 500 remaining, + 200 old = 700 final
-    expect(t.oldCash).toBe(700);
-    expect(t.oldCashIsDefault).toBe(true);
-    expect(t.finalTotal).toBe(1700);
+    // yesterday: old 200 - expenses 300 = -100 after expenses, + 800 = 700 final
+    expect(t.cash.oldCash).toBe(700);
+    expect(t.cash.oldCashIsDefault).toBe(true);
+    expect(t.cash.finalTotal).toBe(1700);
   });
 
   it("a saved value, then a typed override, win over the default", () => {
     const saved = buildDailyTable(cashDay({ savedOldCash: { [DAY]: 450 } }));
-    expect(saved.oldCash).toBe(450);
-    expect(saved.oldCashIsDefault).toBe(false);
+    expect(saved.cash.oldCash).toBe(450);
+    expect(saved.cash.oldCashIsDefault).toBe(false);
     const typed = buildDailyTable(
       cashDay({ savedOldCash: { [DAY]: 450 }, oldCashOverride: 90 }),
     );
-    expect(typed.oldCash).toBe(90);
-    expect(typed.finalTotal).toBe(1090);
+    expect(typed.cash.oldCash).toBe(90);
+    expect(typed.cash.finalTotal).toBe(1090);
   });
 
   it("a negative or junk old cash is treated as 0", () => {
-    expect(buildDailyTable(cashDay({ oldCashOverride: -50 })).oldCash).toBe(0);
+    expect(
+      buildDailyTable(cashDay({ oldCashOverride: -50 })).cash.oldCash,
+    ).toBe(0);
   });
 
   it("an empty day is a valid table of zeros", () => {
@@ -526,12 +537,13 @@ describe("buildDailyTable - cash block and old cash", () => {
       cash: 0,
       online: 0,
     });
-    expect(t.cashBlock).toEqual({
-      specificCash: 0,
-      expenses: 0,
-      remainingCash: 0,
+    expect(t.cash).toMatchObject({
+      collectedCash: 0,
+      cashExpenses: 0,
+      cashAfterExpenses: 0,
+      finalTotal: 0,
     });
-    expect(t.finalTotal).toBe(0);
+    expect(t.counts).toEqual({ bookings: 0, snackSales: 0 });
     expect(buildDailyTableText(t)).toContain("(no bookings or sales)");
   });
 
@@ -629,7 +641,7 @@ describe("expense list under the table", () => {
   it("total of the list is the full amounts; the cash block still takes cash only", () => {
     const x = t();
     expect(x.expenseTotal).toBe(800);
-    expect(x.cashBlock.expenses).toBe(420);
+    expect(x.cash.cashExpenses).toBe(420);
   });
 
   it("the text summary lists them too", () => {

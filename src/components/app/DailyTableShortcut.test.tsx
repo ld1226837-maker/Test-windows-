@@ -6,7 +6,21 @@ import { createRoot, type Root } from "react-dom/client";
 const run = vi.fn(async (_action: string, _table: unknown) => true);
 const build = vi.fn((date: string, override?: number | null) => ({
   date,
-  oldCash: override ?? 2300,
+  rows: [],
+  totals: { total: 0, offer: 0, advance: 0, cash: 2500, online: 0 },
+  counts: { bookings: 0, snackSales: 0 },
+  expenseList: [],
+  expenseTotal: 0,
+  // Old cash 2300 unless typed; cash expenses 340, collected cash 2500.
+  cash: makeCashFlow({
+    date,
+    oldCash: override ?? 2300,
+    source: override == null ? "previous" : "typed",
+    cashExpenses: 340,
+    onlineExpenses: 260,
+    collectedCash: 2500,
+    carried: { date: "2026-10-26", amount: 2300 },
+  }),
 }));
 const goToTab = vi.fn();
 
@@ -24,6 +38,7 @@ vi.mock("@/lib/daily-table-actions", async () => {
 
 import { DailyTableShortcut } from "./DailyTableShortcut";
 import { parseOldCash } from "@/lib/daily-table-actions";
+import { makeCashFlow } from "@/lib/daily-table";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -102,7 +117,9 @@ describe("DailyTableShortcut", () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]![0]).toBe("send");
     // run() receives the table built with the typed old cash.
-    expect(run.mock.calls[0]![1]).toMatchObject({ oldCash: 1500 });
+    expect(run.mock.calls[0]![1]).toMatchObject({
+      cash: { oldCash: 1500 },
+    });
   });
 
   it("leaving old cash untouched sends with the suggested figure (no override)", () => {
@@ -112,7 +129,55 @@ describe("DailyTableShortcut", () => {
     click(byText("Send to owner"));
     expect(run).toHaveBeenCalledTimes(1);
     // nothing typed -> no override, so the suggested (saved / carried) figure is used
-    expect(run.mock.calls[0]![1]).toMatchObject({ oldCash: 2300 });
+    expect(run.mock.calls[0]![1]).toMatchObject({
+      cash: { oldCash: 2300 },
+    });
+  });
+
+  const steps = () =>
+    Array.from(document.body.querySelectorAll("[data-step]")).map((el) => ({
+      key: el.getAttribute("data-step"),
+      text: el.textContent ?? "",
+    }));
+
+  it("the preview lists the cash flow steps in order, with plus / minus spelled out", () => {
+    mount();
+    click(byText("Send table summary"));
+    click(byText("Enter old cash and send"));
+    expect(steps().map((x) => x.key)).toEqual([
+      "carriedForward",
+      "oldCash",
+      "cashExpenses",
+      "cashAfterExpenses",
+      "collectedCash",
+      "finalTotal",
+    ]);
+    const list = document.body.querySelector("ol")!;
+    expect(list.tagName).toBe("OL");
+    const byKey = Object.fromEntries(steps().map((x) => [x.key, x.text]));
+    expect(byKey["carriedForward"]).toContain("CARRIED FORWARD (26-10-2026)");
+    expect(byKey["cashExpenses"]).toContain("Minus");
+    expect(byKey["cashExpenses"]).toContain("-340");
+    expect(byKey["collectedCash"]).toContain("Plus");
+    expect(byKey["collectedCash"]).toContain("+2500");
+    expect(byKey["finalTotal"]).toContain("Equals");
+    expect(byKey["finalTotal"]).toContain("4460"); // 2300 - 340 + 2500
+  });
+
+  it("editing the old-cash field updates every figure at once", () => {
+    mount();
+    click(byText("Send table summary"));
+    click(byText("Enter old cash and send"));
+    const input = document.body.querySelector(
+      'input[aria-label="Old cash"]',
+    ) as HTMLInputElement;
+    setValue(input, "1,000");
+    const byKey = Object.fromEntries(steps().map((x) => [x.key, x.text]));
+    expect(byKey["oldCash"]).toContain("1000");
+    expect(byKey["cashAfterExpenses"]).toContain("660");
+    expect(byKey["finalTotal"]).toContain("3160");
+    // the typed value differs from yesterday's total, said in plain words
+    expect(byKey["carriedForward"]).toContain("less than");
   });
 
   it("parseOldCash handles commas, blanks and negatives", () => {

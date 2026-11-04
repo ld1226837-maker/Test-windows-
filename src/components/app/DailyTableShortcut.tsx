@@ -16,6 +16,7 @@ import {
   useDailyTableSource,
 } from "@/lib/daily-table-actions";
 import { goToTab } from "@/lib/nav";
+import { CashFlowList } from "./CashFlowList";
 
 type Step = "choose" | "send";
 
@@ -45,9 +46,12 @@ export function DailyTableShortcut() {
   };
 
   // What the old cash would be if the owner types nothing (saved for that day,
-  // else yesterday's final total, else 0).
-  const suggested = build(day).oldCash;
+  // else the previous day's final total, else 0).
+  const suggested = build(day).cash.oldCash;
   const typed = oldCashText === null ? null : parseOldCash(oldCashText);
+  // The same table the picture will be drawn from: editing the old-cash field
+  // updates every figure of the cash flow instantly.
+  const preview = build(day, typed);
 
   const send = () => {
     setOpen(false);
@@ -147,6 +151,7 @@ export function DailyTableShortcut() {
                   Left empty it uses Rs {suggested}.
                 </span>
               </div>
+              <CashFlowList table={preview} />
               <div className="grid gap-1 text-sm">
                 <label htmlFor="daily-table-day" className="font-medium">
                   Day

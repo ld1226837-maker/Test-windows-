@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BLOCKS_H,
   IMAGE_WIDTH,
   MAX_IMAGE_HEIGHT,
   PIXEL_RATIO,
+  TAIL_H,
   canvasToPngBlob,
+  cashCardHeight,
   dailyTableFileName,
   drawDailyTableCanvas,
   fitFontSize,
@@ -12,7 +15,12 @@ import {
   planParts,
   renderDailyTableImages,
 } from "./daily-table-image";
-import type { DailyTable, DailyTableRow } from "./daily-table";
+import {
+  makeCashFlow,
+  stepAmountText,
+  type DailyTable,
+  type DailyTableRow,
+} from "./daily-table";
 
 type Call = { fn: string; args: unknown[] };
 
@@ -76,12 +84,15 @@ const table = (rows: DailyTableRow[]): DailyTable => ({
   date: "2026-10-27",
   rows,
   totals: { total: 6000, offer: 800, advance: 1100, cash: 1170, online: 2880 },
-  cashBlock: { specificCash: 1170, expenses: 0, remainingCash: 1170 },
+  counts: { bookings: rows.length, snackSales: 0 },
   expenseList: [],
   expenseTotal: 0,
-  oldCash: 2300,
-  oldCashIsDefault: false,
-  finalTotal: 3470,
+  cash: makeCashFlow({
+    date: "2026-10-27",
+    oldCash: 2300,
+    cashExpenses: 0,
+    collectedCash: 1170,
+  }),
 });
 
 const drawn = () =>
@@ -116,10 +127,12 @@ describe("drawDailyTableCanvas", () => {
       "ALL TOTAL",
       "6000",
       "2880",
-      "SPECIFIC CASH TOTAL (Rs)",
-      "THAT DAY EXPENSES (Rs)",
-      "REMAINING CASH (Rs)",
-      "MANUAL ENTRY OF OLD CASH (Rs)",
+      "BOOKINGS & SALES",
+      "CASH FLOW",
+      "OLD CASH (Rs)",
+      "THAT DAY CASH EXPENSES (Rs)",
+      "CASH AFTER EXPENSES (Rs)",
+      "COLLECTED CASH (Rs)",
       "FINAL TOTAL (Rs)",
       "2300",
       "3470",
@@ -180,20 +193,29 @@ describe("text fitting", () => {
     expect(fitFontSize(c, "9".repeat(60), 50, 30, 12, 500, "x")).toBe(12);
   });
 
-  it("a long note wraps to two lines at most, ending with an ellipsis if needed", () => {
+  it("a long note is never truncated: it keeps every word and has no ellipsis", () => {
     const c = ctx();
-    const long = "word ".repeat(80);
+    const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(" ");
     const l = layoutNotes(c, long, 266);
-    expect(l.lines.length).toBeLessThanOrEqual(2);
-    expect(l.lines[1]!.endsWith("\u2026")).toBe(true);
+    expect(l.lines.length).toBeGreaterThan(2);
+    expect(l.lines.some((x) => x.includes("\u2026"))).toBe(false);
+    expect(l.lines.join(" ")).toBe(long);
     const short = layoutNotes(c, "extra 30 min and a bit more text here", 266);
     expect(short.lines.length).toBeLessThanOrEqual(2);
     expect(short.lines.join(" ")).toContain("extra");
   });
 
-  it("an unbroken long word is split rather than overflowing", () => {
+  it("an unbroken long word is split across lines, losing no characters", () => {
     const l = layoutNotes(ctx(), "x".repeat(60), 266);
-    expect(l.lines.length).toBeLessThanOrEqual(2);
+    expect(l.lines.join("")).toBe("x".repeat(60));
+    expect(l.lines.some((x) => x.includes("\u2026"))).toBe(false);
+  });
+
+  it("a very long note makes its booking row taller instead of being cut", () => {
+    const c = ctx();
+    const long = Array.from({ length: 60 }, (_, i) => `note${i}`).join(" ");
+    const lay = layoutNotes(c, long, 266);
+    expect(lay.lines.length * 26 + 24).toBeGreaterThan(80);
   });
 
   it("a two-line note makes its row taller than a plain one", () => {
@@ -265,5 +287,210 @@ describe("files", () => {
   it("throws a clear error when no 2D context exists", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     expect(() => drawDailyTableCanvas(table([]), base)).toThrow(/Canvas/);
+  });
+});
+
+const withCash = (
+  rows: DailyTableRow[],
+  cash: Parameters<typeof makeCashFlow>[0],
+  expenseList: DailyTable["expenseList"] = [],
+): DailyTable => ({
+  ...table(rows),
+  expenseList,
+  expenseTotal: expenseList.reduce((n, e) => n + e.amount, 0),
+  cash: makeCashFlow(cash),
+});
+
+describe("the redesigned summary picture", () => {
+  const worked = withCash(
+    [row(5)],
+    {
+      date: "2026-10-27",
+      oldCash: 1000,
+      cashExpenses: 340,
+      onlineExpenses: 260,
+      collectedCash: 2500,
+      carried: { date: "2026-10-26", amount: 1200 },
+    },
+    [
+      {
+        key: "e1",
+        description: "Ball repair",
+        notes: "",
+        amount: 300,
+        cash: 300,
+        online: 0,
+        tag: "CASH",
+      },
+      {
+        key: "e2",
+        description: "Staff",
+        notes: "Cash part 40",
+        amount: 100,
+        cash: 40,
+        online: 60,
+        tag: "CASH+ONLINE",
+      },
+      {
+        key: "e3",
+        description: "Water",
+        notes: "",
+        amount: 200,
+        cash: 0,
+        online: 200,
+        tag: "ONLINE",
+      },
+    ],
+  );
+
+  it("draws the header strip, the counts, and every cash step label and amount", () => {
+    drawDailyTableCanvas(worked, base);
+    const t = drawn();
+    for (const s of [
+      "COLLECTED CASH",
+      "CASH EXPENSES",
+      "FINAL TOTAL",
+      "BOOKINGS & SALES",
+      "1 booking | 0 snack sales",
+    ])
+      expect(t, s).toContain(s);
+    for (const st of worked.cash.steps) {
+      expect(t, st.label).toContain(st.label);
+      expect(t, stepAmountText(st)).toContain(stepAmountText(st));
+    }
+    // sign prefixes and the caption
+    expect(t).toContain("-340");
+    expect(t).toContain("+2500");
+    expect(t).toContain("3160");
+    expect(t).toContain(
+      "Old cash - cash expenses = cash after expenses; + collected cash = final total.",
+    );
+  });
+
+  it("the cash steps are drawn top to bottom in model order", () => {
+    drawDailyTableCanvas(worked, base);
+    const t = drawn();
+    const idx = worked.cash.steps.map((st) => t.lastIndexOf(st.label));
+    expect(idx.every((i) => i >= 0)).toBe(true);
+    expect([...idx].sort((a, b) => a - b)).toEqual(idx);
+  });
+
+  it("draws the CASH / ONLINE tag of each expense and both subtotals", () => {
+    drawDailyTableCanvas(worked, base);
+    const t = drawn();
+    expect(t).toEqual(
+      expect.arrayContaining(["CASH", "ONLINE", "CASH+ONLINE"]),
+    );
+    expect(t).toContain("Cash expenses (deducted)");
+    expect(t).toContain("Online expenses (not deducted)");
+    expect(t).toContain("PAID");
+  });
+
+  it("a negative balance prints with a minus sign", () => {
+    const neg = withCash([row(5)], {
+      date: "2026-10-27",
+      oldCash: 50,
+      cashExpenses: 300,
+      collectedCash: 100,
+    });
+    drawDailyTableCanvas(neg, base);
+    expect(drawn()).toContain("-250");
+    expect(drawn()).toContain("-150");
+  });
+
+  it("the carried-forward line and its difference note are drawn only when they exist", () => {
+    const typedMore = withCash([row(5)], {
+      date: "2026-10-27",
+      oldCash: 1500,
+      cashExpenses: 0,
+      collectedCash: 0,
+      carried: { date: "2026-10-26", amount: 1200 },
+    });
+    drawDailyTableCanvas(typedMore, base);
+    expect(drawn()).toContain("CARRIED FORWARD (26-10-2026)");
+    expect(
+      drawn().some((x) => x.startsWith("Typed old cash is Rs 300 more")),
+    ).toBe(true);
+    calls.length = 0;
+    drawDailyTableCanvas(table([row(5)]), base);
+    expect(drawn().some((x) => x.startsWith("CARRIED FORWARD"))).toBe(false);
+  });
+
+  it("only strings from the model are drawn: no old hard-coded cash labels", () => {
+    drawDailyTableCanvas(worked, base);
+    const joined = drawn().join("|");
+    for (const gone of [
+      "REMAINING CASH",
+      "SPECIFIC CASH TOTAL",
+      "MANUAL ENTRY",
+    ])
+      expect(joined).not.toContain(gone);
+  });
+});
+
+describe("heights and part splitting for the taller cash card", () => {
+  const cashOnly = {
+    date: "2026-10-27",
+    oldCash: 1,
+    cashExpenses: 0,
+    collectedCash: 0,
+  };
+  const carried = { ...cashOnly, carried: { date: "2026-10-26", amount: 5 } };
+
+  it("the card grows with the optional carried and difference lines, never past BLOCKS_H", () => {
+    const plain = cashCardHeight(withCash([], cashOnly));
+    const withLine = cashCardHeight(withCash([], { ...carried, oldCash: 5 }));
+    const withNote = cashCardHeight(withCash([], carried));
+    expect(plain).toBeLessThan(withLine);
+    expect(withLine).toBeLessThan(withNote);
+    expect(withNote).toBe(BLOCKS_H);
+    expect(TAIL_H).toBeGreaterThan(BLOCKS_H);
+  });
+
+  it("0 rows: one part with the empty message, cash card and totals", () => {
+    const parts = planParts(makeCtx([]), withCash([], carried));
+    expect(parts).toHaveLength(1);
+    expect(parts[0]!.rows).toHaveLength(0);
+    drawDailyTableCanvas(withCash([], carried), base);
+    expect(drawn()).toContain("No bookings or sales on this day");
+    expect(drawn()).toContain("FINAL TOTAL (Rs)");
+  });
+
+  it("1 row and 40 rows each fit one image under the cap", () => {
+    for (const count of [1, 40]) {
+      const t = withCash(
+        Array.from({ length: count }, (_, i) => row(i % 12)),
+        carried,
+      );
+      const parts = planParts(makeCtx([]), t);
+      expect(parts, `${count} rows`).toHaveLength(1);
+      expect(parts[0]!.height).toBeLessThanOrEqual(MAX_IMAGE_HEIGHT);
+      expect(parts[0]!.height).toBeGreaterThan(
+        parts[0]!.expensesH + parts[0]!.cashH,
+      );
+    }
+  });
+
+  it("a very long day splits; only the last part holds the tail; none passes the cap", () => {
+    const t = withCash(
+      Array.from({ length: 160 }, (_, i) => row(i % 12)),
+      carried,
+    );
+    const parts = planParts(makeCtx([]), t);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.reduce((n, p) => n + p.rows.length, 0)).toBe(160);
+    for (const p of parts)
+      expect(p.height).toBeLessThanOrEqual(MAX_IMAGE_HEIGHT);
+    parts.slice(0, -1).forEach((p) => expect(p.expenses).toEqual([]));
+    // a non-last part reserves nothing for the cash card it does not draw
+    const first = parts[0]!;
+    const rowsH = first.rows.reduce((n, r) => n + r.height, 0);
+    expect(first.height).toBeLessThan(rowsH + 600);
+    drawDailyTableCanvas(t, { ...base, partIndex: 0 });
+    expect(drawn()).not.toContain("CASH FLOW");
+    calls.length = 0;
+    drawDailyTableCanvas(t, { ...base, partIndex: parts.length - 1 });
+    expect(drawn()).toContain("CASH FLOW");
+    expect(drawn()).toContain("COLLECTED CASH");
   });
 });

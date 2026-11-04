@@ -60,6 +60,13 @@ export type AppSettings = {
   /** "Old cash" the owner typed for a day ("YYYY-MM-DD" -> whole rupees).
    * Kept for the last DAILY_OLD_CASH_KEEP days only. */
   dailyOldCash: Record<string, number>;
+  /** "Cash after expenses" (old cash - that day's cash-only expenses) stored
+   * for a day when its summary was sent ("YYYY-MM-DD" -> signed whole rupees;
+   * NEGATIVE is allowed: expenses can exceed old cash). Kept for the last
+   * DAILY_OLD_CASH_KEEP days only. It is a record, not an input: while a day
+   * still has records the figure is recomputed, and this copy is overwritten
+   * on that day's next send. */
+  dailyCashAfterExpenses: Record<string, number>;
 };
 
 /** How many days of typed "old cash" are kept in app settings. */
@@ -85,6 +92,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   monthlyReportLastSentKey: null,
   summaryImageLogo: true,
   dailyOldCash: {},
+  dailyCashAfterExpenses: {},
 };
 
 const KEY = "ks:app-settings";
@@ -105,6 +113,27 @@ function savedOldCashMap(value: unknown): Record<string, number> {
   for (const k of days) {
     const n = Number(value[k]);
     if (Number.isFinite(n) && n >= 0) out[k] = Math.round(n);
+  }
+  return out;
+}
+
+/** Same as savedOldCashMap but ALLOWS negative rupees (cash after expenses can
+ * be below zero). A missing / non-object value (a settings file from before
+ * this key existed) loads as {}. */
+function savedSignedRupeeMap(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const days = Object.keys(value)
+    .filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k))
+    .sort()
+    .slice(-DAILY_OLD_CASH_KEEP);
+  const out: Record<string, number> = {};
+  for (const k of days) {
+    const raw = value[k];
+    if (raw === null || raw === "" || typeof raw === "boolean") continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    // Math.round(-0.4) is -0; keep zero as a plain 0.
+    out[k] = Math.round(n) || 0;
   }
   return out;
 }
@@ -220,6 +249,9 @@ export function normalizeAppSettings(value: unknown): AppSettings {
       DEFAULT_APP_SETTINGS.summaryImageLogo,
     ),
     dailyOldCash: savedOldCashMap(saved["dailyOldCash"]),
+    dailyCashAfterExpenses: savedSignedRupeeMap(
+      saved["dailyCashAfterExpenses"],
+    ),
   };
 }
 

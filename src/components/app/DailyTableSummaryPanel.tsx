@@ -14,11 +14,16 @@ import { Switch } from "@/components/ui/switch";
 import {
   COLUMN_HEADERS,
   EXPENSE_HEADERS,
+  EXPENSE_LABELS,
+  TABLE_TITLE,
+  countsText,
   formatCell,
+  headlineFigures,
   rowCells,
   totalCells,
 } from "@/lib/daily-table";
 import {
+  parseOldCash,
   todayKey,
   useDailyTable,
   useDailyTableActions,
@@ -26,14 +31,7 @@ import {
 } from "@/lib/daily-table-actions";
 import { whatsappNumber } from "@/lib/phone";
 import { useAppSettings } from "@/lib/settings";
-
-/** "1,170" / "1170" / "" -> whole rupees, or null when empty (use the default). */
-const parseOldCash = (text: string): number | null => {
-  const t = text.replace(/[^\d.]/g, "");
-  if (!t) return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
-};
+import { CashFlowList } from "./CashFlowList";
 
 /**
  * Daily Summary picture: pick a day, set the old cash, then send the PNG of the
@@ -53,6 +51,8 @@ export function DailyTableSummaryPanel() {
   // A different day starts from that day's own saved / default old cash.
   useEffect(() => setOldCashText(null), [date]);
 
+  // One source for the hint: the OLD CASH step of the cash flow.
+  const oldCashHint = table.cash.steps.find((x) => x.key === "oldCash")?.hint;
   const hasOwner = Boolean(whatsappNumber(settings.whatsappOwner));
   const go = (a: SummaryAction) => void run(a, table);
   const label = (a: SummaryAction, text: string) =>
@@ -90,7 +90,7 @@ export function DailyTableSummaryPanel() {
           <Input
             id="daily-table-old-cash"
             inputMode="numeric"
-            value={oldCashText ?? String(table.oldCash)}
+            value={oldCashText ?? String(table.cash.oldCash)}
             onChange={(e) => setOldCashText(e.target.value)}
             aria-describedby="daily-table-old-cash-hint"
           />
@@ -98,13 +98,46 @@ export function DailyTableSummaryPanel() {
             id="daily-table-old-cash-hint"
             className="text-[11px] text-muted-foreground"
           >
-            {table.oldCashIsDefault && oldCashText === null
-              ? "Starts from the previous day's final total."
-              : "Typed by you; remembered for this day."}
+            {oldCashHint}
           </p>
         </div>
       </div>
 
+      <ul
+        aria-label="Headline figures"
+        className="grid grid-cols-3 gap-2 text-center"
+      >
+        {headlineFigures(table).map((h) => (
+          <li
+            key={h.key}
+            className={`min-w-0 rounded-md border px-1 py-2 ${
+              h.key === "finalTotal"
+                ? "border-2 border-indigo-900/80 bg-amber-200/80 dark:bg-amber-500/30"
+                : "bg-card"
+            }`}
+          >
+            <div className="text-[10px] font-bold text-muted-foreground">
+              {h.label}
+            </div>
+            <div
+              className={`break-all font-mono text-base font-bold tabular-nums ${
+                h.negative
+                  ? "text-red-700 dark:text-red-400"
+                  : "text-indigo-900 dark:text-indigo-100"
+              }`}
+            >
+              {h.value}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
+        <span className="font-bold">{TABLE_TITLE}</span>
+        <span className="text-xs text-muted-foreground">
+          {countsText(table.counts)}
+        </span>
+      </div>
       <div className="overflow-x-auto rounded-md border-2 border-indigo-900/80 bg-card">
         <table className="w-full min-w-[520px] border-collapse text-xs tabular-nums">
           <thead>
@@ -193,7 +226,10 @@ export function DailyTableSummaryPanel() {
             {table.expenseList.map((e) => (
               <tr key={e.key}>
                 <td className="border border-border px-2 py-1.5">
-                  {e.description}
+                  {e.description}{" "}
+                  <span className="rounded border px-1 text-[10px] font-bold text-muted-foreground">
+                    {e.tag}
+                  </span>
                 </td>
                 <td className="border border-border px-2 py-1.5 text-muted-foreground">
                   {e.notes}
@@ -206,50 +242,34 @@ export function DailyTableSummaryPanel() {
             {table.expenseList.length > 0 && (
               <tr className="bg-amber-200/80 font-bold dark:bg-amber-500/30">
                 <td className="border border-border px-2 py-1.5" colSpan={2}>
-                  TOTAL EXPENSES
+                  {EXPENSE_LABELS.total}
                 </td>
                 <td className="border border-border px-2 py-1.5 text-right font-mono">
                   {formatCell(table.expenseTotal)}
                 </td>
               </tr>
             )}
+            <tr>
+              <td className="border border-border px-2 py-1.5" colSpan={2}>
+                {EXPENSE_LABELS.cash}
+              </td>
+              <td className="border border-border px-2 py-1.5 text-right font-mono">
+                {formatCell(table.cash.cashExpenses)}
+              </td>
+            </tr>
+            <tr className="text-muted-foreground">
+              <td className="border border-border px-2 py-1.5" colSpan={2}>
+                {EXPENSE_LABELS.online}
+              </td>
+              <td className="border border-border px-2 py-1.5 text-right font-mono">
+                {formatCell(table.cash.onlineExpenses)}
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-2 rounded-lg border bg-card p-3 text-sm">
-          {(
-            [
-              ["SPECIFIC CASH TOTAL", table.cashBlock.specificCash],
-              ["THAT DAY EXPENSES", table.cashBlock.expenses],
-              ["REMAINING CASH", table.cashBlock.remainingCash],
-            ] as const
-          ).map(([label, v]) => (
-            <div key={label} className="flex justify-between gap-2">
-              <span>{label}</span>
-              <span className="font-mono font-bold text-indigo-900 dark:text-indigo-200">
-                Rs {formatCell(v)}
-              </span>
-            </div>
-          ))}
-          <p className="text-[11px] text-muted-foreground">
-            Remaining = cash total - cash expenses
-          </p>
-        </div>
-        <div className="space-y-2 rounded-lg border bg-card p-3 text-sm">
-          <p className="text-xs text-muted-foreground">
-            Remaining cash {formatCell(table.cashBlock.remainingCash)} + old
-            cash {formatCell(table.oldCash)}
-          </p>
-          <div className="flex items-center justify-between rounded-md border-2 border-indigo-900/80 bg-amber-200/80 px-3 py-2 font-bold dark:bg-amber-500/30">
-            <span>FINAL TOTAL</span>
-            <span className="font-mono text-lg text-indigo-900 dark:text-indigo-100">
-              Rs {formatCell(table.finalTotal)}
-            </span>
-          </div>
-        </div>
-      </div>
+      <CashFlowList table={table} />
 
       <div className="flex items-center justify-between gap-3">
         <Label htmlFor="daily-table-logo" className="text-sm">
