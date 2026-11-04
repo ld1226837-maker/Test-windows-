@@ -18,3 +18,24 @@ describe("tauri.conf.json fs plugin", () => {
     expect(conf.plugins?.fs?.requireLiteralLeadingDot).toBe(false);
   });
 });
+
+/**
+ * Regression: receipt photos (expenses, investments, bills) are shown through
+ * `URL.createObjectURL()`, i.e. `blob:` image URLs. If the CSP's img-src does
+ * not allow `blob:` the WebView refuses them and every receipt renders as a
+ * broken image.
+ */
+describe("tauri.conf.json CSP", () => {
+  const conf = JSON.parse(
+    readFileSync(resolve(__dirname, "../../src-tauri/tauri.conf.json"), "utf8"),
+  ) as { app?: { security?: { csp?: string } } };
+
+  it("allows blob: and data: images so receipt previews can render", () => {
+    const csp = conf.app?.security?.csp ?? "";
+    const img =
+      csp.split(";").find((d) => d.trim().startsWith("img-src")) ?? "";
+    expect(img.split(/\s+/)).toEqual(
+      expect.arrayContaining(["blob:", "data:"]),
+    );
+  });
+});
